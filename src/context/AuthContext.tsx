@@ -24,6 +24,9 @@ import {
 import { COLLECTIONS, type FirestoreUser } from "@/lib/firestore";
 import Cookies from "js-cookie";
 import { requestFCMToken, setupForegroundMessaging } from "@/lib/fcm";
+import { useRouter } from "next/router";
+
+const router = useRouter();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface AuthContextValue {
@@ -52,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Persist session token for middleware route guard
         const token = await firebaseUser.getIdToken();
         Cookies.set("chatly_session", token, { expires: 7, sameSite: "lax" });
-        
+
         // Always request FCM token on login — requestFCMToken handles permission internally
         if (typeof window !== "undefined" && "Notification" in window && Notification.permission !== "denied") {
           requestFCMToken(firebaseUser.uid);
@@ -153,7 +156,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await signOut(auth);
     Cookies.remove("chatly_session");
-    window.location.href = "/login";
+    // window.location.href = "/login";
+    router.replace('/login')
   }, []);
 
   return (
