@@ -1,7 +1,10 @@
+"use client";
+
 import React from "react";
 import Link from "next/link";
 import { ArrowRight, CheckCheck, MessageCircle, Plus, Search, Send, ShieldCheck, Sparkles, Users, Zap } from "lucide-react";
 import ChatlyLogo from "./ChatlyLogo";
+import { motion } from "framer-motion";
 
 const Hero = () => {
     return (
@@ -11,26 +14,38 @@ const Hero = () => {
 
             <div className="relative z-10 mx-auto grid w-full max-w-7xl items-center gap-10 lg:grid-cols-[0.92fr_1.08fr] xl:gap-14">
                 <div className="max-w-2xl text-left">
-                    <div
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.25 }}
                         className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3.5 py-2 text-xs font-bold uppercase tracking-[0.18em] text-primary shadow-sm shadow-primary/10"
                     >
                         <Sparkles className="h-3.5 w-3.5" />
                         Private real-time chat
-                    </div>
+                    </motion.div>
 
-                    <h1
+                    <motion.h1
+                        initial={{ opacity: 0, x: -80 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.35, type: "spring", bounce: 0.4 }}
                         className="max-w-[12ch] text-4xl font-black leading-[1.02] tracking-normal text-foreground sm:text-6xl lg:text-7xl"
                     >
                         Chat that feels instant, private, and human.
-                    </h1>
+                    </motion.h1>
 
-                    <p
+                    <motion.p
+                        initial={{ opacity: 0, x: -40 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.35, delay: 0.05, type: "spring", bounce: 0.3 }}
                         className="mt-6 max-w-xl text-base leading-8 text-muted-foreground sm:text-lg"
                     >
                         Chatly brings OTP login, live delivery status, and smooth group conversations into one clean workspace built for everyday messaging.
-                    </p>
+                    </motion.p>
 
-                    <div
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.25, delay: 0.15 }}
                         className="mt-8 flex w-full flex-col gap-3 sm:w-auto sm:flex-row"
                     >
                         <Link href="/login" className="inline-flex min-h-14 items-center justify-center gap-2 rounded-full bg-primary px-7 text-base font-bold text-primary-foreground shadow-xl shadow-emerald-500/20 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-emerald-500/35">
@@ -42,9 +57,20 @@ const Hero = () => {
                             <MessageCircle className="h-4.5 w-4.5 text-primary" />
                             See how it works
                         </Link>
-                    </div>
+                    </motion.div>
 
-                    <div
+                    <motion.div
+                        initial="hidden"
+                        animate="visible"
+                        variants={{
+                            hidden: {},
+                            visible: {
+                                transition: {
+                                    staggerChildren: 0.05,
+                                    delayChildren: 0.2
+                                }
+                            }
+                        }}
                         className="mt-9 grid max-w-xl grid-cols-1 gap-3 text-sm sm:grid-cols-3"
                     >
                         {[
@@ -52,15 +78,25 @@ const Hero = () => {
                             { label: "Live sync", icon: Zap },
                             { label: "Group ready", icon: Users },
                         ].map((item) => (
-                            <div key={item.label} className="flex min-h-14 items-center gap-2.5 rounded-lg border border-border bg-background/55 px-3.5 backdrop-blur sm:min-h-16">
+                            <motion.div 
+                                variants={{
+                                    hidden: { opacity: 0, y: 15 },
+                                    visible: { opacity: 1, y: 0 }
+                                }}
+                                key={item.label} 
+                                className="flex min-h-14 items-center gap-2.5 rounded-lg border border-border bg-background/55 px-3.5 backdrop-blur sm:min-h-16"
+                            >
                                 <item.icon className="h-4.5 w-4.5 shrink-0 text-primary" />
                                 <span className="font-semibold text-foreground/85">{item.label}</span>
-                            </div>
+                            </motion.div>
                         ))}
-                    </div>
+                    </motion.div>
                 </div>
 
-                <div
+                <motion.div
+                    initial={{ opacity: 0, filter: "blur(20px)", scale: 0.9 }}
+                    animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
+                    transition={{ duration: 0.6, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
                     className="relative mx-auto w-full max-w-[720px]"
                 >
                     <div className="absolute -left-5 top-8 h-28 w-28 rounded-[2rem] border border-primary/15 bg-primary/10 blur-2xl" />
@@ -171,7 +207,7 @@ const Hero = () => {
                             </div>
                         </div>
                     </div>
-                </div>
+                </motion.div>
             </div>
         </section>
     );
