@@ -48,7 +48,7 @@ const Hero = () => {
                         transition={{ duration: 0.25, delay: 0.15 }}
                         className="mt-8 flex w-full flex-col gap-3 sm:w-auto sm:flex-row"
                     >
-                        <Link href="/login" className="inline-flex min-h-14 items-center justify-center gap-2 rounded-full bg-primary px-7 text-base font-bold text-primary-foreground shadow-xl shadow-emerald-500/20 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-emerald-500/35">
+                        <Link href="/chat" className="inline-flex min-h-14 items-center justify-center gap-2 rounded-full bg-primary px-7 text-base font-bold text-primary-foreground shadow-xl shadow-emerald-500/20 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-emerald-500/35">
                             Start Chatting
                             <ArrowRight className="h-4.5 w-4.5" />
                         </Link>
@@ -78,12 +78,12 @@ const Hero = () => {
                             { label: "Live sync", icon: Zap },
                             { label: "Group ready", icon: Users },
                         ].map((item) => (
-                            <motion.div 
+                            <motion.div
                                 variants={{
                                     hidden: { opacity: 0, y: 15 },
                                     visible: { opacity: 1, y: 0 }
                                 }}
-                                key={item.label} 
+                                key={item.label}
                                 className="flex min-h-14 items-center gap-2.5 rounded-lg border border-border bg-background/55 px-3.5 backdrop-blur sm:min-h-16"
                             >
                                 <item.icon className="h-4.5 w-4.5 shrink-0 text-primary" />

@@ -4,9 +4,11 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import ThemeToggle from "../ui/ThemeToggle";
 import ChatlyLogo from "./ChatlyLogo";
+import { useAuth } from "@/context/AuthContext";
 
 const Navbar = () => {
     const [scrolled, setScrolled] = useState(false);
+    const { user, loading } = useAuth();
 
     useEffect(() => {
         const handleScroll = () => {
@@ -40,18 +42,31 @@ const Navbar = () => {
 
                 <div className="flex items-center gap-2 sm:gap-4">
                     <ThemeToggle />
-                    <Link
-                        href="/login"
-                        className="hidden px-5 py-2 text-sm font-semibold hover:text-primary transition-colors sm:inline-flex"
-                    >
-                        Login
-                    </Link>
-                    <Link
-                        href="/register"
-                        className="px-4 sm:px-6 py-2.5 bg-primary text-primary-foreground rounded-full text-sm font-bold shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/40 hover:-translate-y-0.5 transition-all duration-300"
-                    >
-                        Sign Up
-                    </Link>
+                    {!loading && (
+                        user ? (
+                            <Link
+                                href="/chat"
+                                className="px-4 sm:px-6 py-2.5 bg-primary text-primary-foreground rounded-full text-sm font-bold shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/40 hover:-translate-y-0.5 transition-all duration-300"
+                            >
+                                Go to Chat
+                            </Link>
+                        ) : (
+                            <>
+                                <Link
+                                    href="/login"
+                                    className="hidden px-5 py-2 text-sm font-semibold hover:text-primary transition-colors sm:inline-flex"
+                                >
+                                    Login
+                                </Link>
+                                <Link
+                                    href="/register"
+                                    className="px-4 sm:px-6 py-2.5 bg-primary text-primary-foreground rounded-full text-sm font-bold shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/40 hover:-translate-y-0.5 transition-all duration-300"
+                                >
+                                    Sign Up
+                                </Link>
+                            </>
+                        )
+                    )}
                 </div>
             </div>
         </nav>
