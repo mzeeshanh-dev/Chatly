@@ -47,12 +47,10 @@ export async function POST(request: NextRequest) {
 
 
     const payload: any = {
-      notification: {
-        title: finalTitle,
-        body,
-      },
       webpush: {
         notification: {
+          title: finalTitle,
+          body,
           icon: '/favicon.ico',
           badge: '/favicon.ico',
           vibrate: [200, 100, 200],
@@ -61,14 +59,30 @@ export async function POST(request: NextRequest) {
           link: '/chat'
         }
       },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title: finalTitle,
+              body,
+            },
+            sound: "default"
+          }
+        }
+      },
+      android: {
+        priority: "high"
+      },
       tokens,
     };
-    if (data || chatId || senderPhotoUrl || senderName) {
+    if (data || chatId || senderPhotoUrl || senderName || finalTitle || body) {
       payload.data = {
-        ...data,
+        ...(data || {}),
         chatId: chatId || "",
         senderPhotoUrl: senderPhotoUrl || "",
-        senderName: senderName || ""
+        senderName: senderName || "",
+        title: finalTitle || "",
+        body: body || "",
       };
     }
 
