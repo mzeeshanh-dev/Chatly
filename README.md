@@ -1,3 +1,7 @@
+# Live Preview
+<img width="800" height="450" alt="chatly gif animation" src="https://github.com/user-attachments/assets/36e24a3e-d778-4cc1-bd84-ce65026ae082" />
+
+
 # 💬 Chatly — Serverless Real-Time Messaging Platform
 
 **Chatly** is a high-performance, serverless real-time messaging application designed with a robust dual-layer permission system, hierarchical group structures, and reactive state management. Built explicitly using **Next.js (App Router)** and **TypeScript** as a **Full-Stack Application**, the architecture leverages native edge environments and client-directed synchronization loops to provide an ultra-responsive, WhatsApp-like desktop and mobile ecosystem.
