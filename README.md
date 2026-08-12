@@ -1,5 +1,6 @@
 # Live Preview
-<img width="800" height="450" alt="chatly gif animation" src="https://github.com/user-attachments/assets/36e24a3e-d778-4cc1-bd84-ce65026ae082" />
+<img width="480" height="270" alt="output" src="https://github.com/user-attachments/assets/ce3fba55-3fb4-4550-b3f0-d3cc90520dbd" />
+
 
 
 # 💬 Chatly — Serverless Real-Time Messaging Platform
