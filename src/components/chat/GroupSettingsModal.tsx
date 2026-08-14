@@ -15,6 +15,7 @@ import {
 import { db } from "@/lib/firebase";
 import { COLLECTIONS, type FirestoreUser, type GroupDoc } from "@/lib/firestore";
 import { useAuth } from "@/context/AuthContext";
+import TrackedItemsPanel from "./TrackedItemsPanel";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 
@@ -253,6 +254,15 @@ const GroupSettingsModal = ({ group, onClose }: GroupSettingsModalProps) => {
             )}
 
             <div className="h-px bg-zinc-200 dark:bg-zinc-800/40 my-2" />
+
+            {groupId && user && (
+              <TrackedItemsPanel
+                parentCollection="groups"
+                parentId={groupId}
+                myUid={user.uid}
+                resolveName={(uid) => (uid === user.uid ? "You" : (users.find((x) => x.uid === uid)?.displayName ?? "Unknown"))}
+              />
+            )}
 
             <div>
               <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">

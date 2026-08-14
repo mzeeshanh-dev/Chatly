@@ -38,6 +38,20 @@
 
 ---
 
+## 📱 Now also serving the Android app
+
+The Chatly Android app (React Native, separate repo) shares this Firebase project and now also calls **this app's own API routes** (`/api/upload/chat-media`, `/api/notify`, `/api/notify/rejection`, `/api/notify/request`) for anything that needs a privileged credential — media upload, push notifications, transactional email. That's a deliberate choice: the Android app's backend was going to be Firebase Cloud Functions, but that requires Firebase's paid Blaze plan, so it reuses this already-deployed, already-free Vercel backend instead. All four routes now require a valid `Authorization: Bearer <Firebase ID token>` header (previously `/api/notify*` had no auth check at all — tightened as part of this change, since it's no longer only ever called from within this app's own trusted client).
+
+### 🆕 Expanded Shared Features (Cross-Platform)
+New capabilities shared across the Web and Android apps include:
+*   **Media & Attachments:** Seamlessly send images, documents, and files up to 10MB powered by Cloudinary.
+*   **Voice Messages:** WhatsApp-style native audio recording with an interactive waveform/scrubber UI for quick communication.
+*   **Message Tagging (Action Items):** Select and tag any message as an open **Question**, a **Task** (with assignees), or a **Decision**. All tracked items are easily accessible in a dedicated group/chat panel.
+*   **Personal Follow-ups:** Set private reminders on specific messages so you never forget to reply or take action.
+*   **Live Presence Dots:** Direct message avatars feature dynamic colored dots — green for connected and online, yellow for pending requests, and red for blocked users.
+
+---
+
 ## 💻 Comprehensive Tech Stack
 
 Built entirely as a modern **Full-Stack Application**, handling both the rich client interface and secure backend APIs within a single unified repository.

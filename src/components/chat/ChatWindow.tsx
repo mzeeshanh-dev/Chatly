@@ -13,8 +13,15 @@ import {
   X,
   ArrowBendUpRight,
   PencilSimple,
+  Paperclip,
+  Image as ImageIcon,
+  FileText,
+  Microphone,
+  Stop,
+  TagSimple,
 } from "@phosphor-icons/react";
-import { useChatsQuery, useGroupsQuery, useLiveChatDoc } from "@/lib/firebase-hooks";
+import { useChatsQuery, useGroupsQuery, useLiveChatDoc, useTrackedItemCounts } from "@/lib/firebase-hooks";
+import { uploadChatMediaFile, type ChatMediaType } from "@/lib/media";
 import {
   collection,
   onSnapshot,
@@ -33,6 +40,7 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { COLLECTIONS, messagesRef, type MessageDoc, type FirestoreUser } from "@/lib/firestore";
+import { getPresenceDotColor } from "@/lib/presence";
 import { useAuth } from "@/context/AuthContext";
 import type { SelectedConversation } from "./ChatList";
 import MessageItem from "./MessageItem";
@@ -41,6 +49,8 @@ import { MessageSkeleton } from "@/components/ui/Skeleton";
 import { formatDistanceToNow } from "date-fns";
 import GroupSettingsModal from "./GroupSettingsModal";
 import UserProfileModal from "./UserProfileModal";
+import MessageTagModal from "./MessageTagModal";
+import DigestBanner from "./DigestBanner";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 const EDIT_WINDOW_MS = 3 * 60 * 1000;
@@ -67,8 +77,19 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
   const [forwarding, setForwarding] = useState(false);
   const [editingMessage, setEditingMessage] = useState<(MessageDoc & { id: string }) | null>(null);
   const [editText, setEditText] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showTagModal, setShowTagModal] = useState(false);
+  const [pendingMedia, setPendingMedia] = useState<{ file: File; type: "image" | "file" } | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recordMs, setRecordMs] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordChunksRef = useRef<Blob[]>([]);
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const { data: forwardChats = [] } = useChatsQuery(user?.uid);
   const { data: forwardGroups = [] } = useGroupsQuery(user?.uid);
@@ -96,6 +117,20 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
   // This gives us real-time status updates so the accept/decline card disappears
   // immediately after action — no page refresh needed.
   const { data: liveDoc } = useLiveChatDoc(parentCollection, parentId);
+  const { openQuestionsCount, pendingTasksCount, pendingDecisionsCount } = useTrackedItemCounts(parentCollection, parentId);
+
+  // Snapshot the "while you were away" digest numbers exactly once per open,
+  // before the mark-as-read effect below zeroes unreadCount for this device.
+  const [unreadOnOpen, setUnreadOnOpen] = useState<number | null>(null);
+  const [digestDismissed, setDigestDismissed] = useState(false);
+  useEffect(() => {
+    setUnreadOnOpen(null);
+    setDigestDismissed(false);
+  }, [parentId]);
+  useEffect(() => {
+    if (!liveDoc || !user) return;
+    setUnreadOnOpen((prev) => (prev !== null ? prev : ((liveDoc as any)?.unreadCount?.[user.uid] ?? 0)));
+  }, [liveDoc, user]);
 
   // ─── Real-time User Presence Hook ──────────────────────────────────────────
   const otherUid = isDM ? (conversation as any).participants?.find((p: string) => p !== user?.uid) : null;
@@ -128,6 +163,9 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
     : null;
 
   const isRejected = isDM && liveStatus === "rejected";
+  const headerDotColor = isDM
+    ? getPresenceDotColor({ status: liveStatus ?? "active", isBlocked, isOnline: liveProfile?.status === "online" })
+    : null;
 
   // Pending logic — derived from live data
   const groupMember = !isDM ? liveMembers?.find((m: any) => m.uid === user?.uid) : null;
@@ -296,11 +334,14 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
       });
 
       // Notify User A that User B rejected
-      if (isPending && !isRequester) {
-        fetch("/api/notify/rejection", {
-          method: "POST",
-          body: JSON.stringify({ toEmail: chatEmail, fromName: myDisplayName }),
-        }).catch(err => console.error("Notify rejection error:", err));
+      if (isPending && !isRequester && user) {
+        user.getIdToken().then((idToken) =>
+          fetch("/api/notify/rejection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+            body: JSON.stringify({ toEmail: chatEmail, fromName: myDisplayName }),
+          })
+        ).catch(err => console.error("Notify rejection error:", err));
       }
     } else {
       // Remove self from group
@@ -360,6 +401,57 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
     return () => window.removeEventListener("click", handleClick);
   }, []);
 
+  // ─── Push notification fan-out ──────────────────────────────────────────────
+  // Client-triggered (not a Cloud Functions Firestore trigger) — this app has
+  // no Cloud Functions backend (see root README's "Server architecture"
+  // section: staying on the Firebase Spark/free plan, which cannot run Cloud
+  // Functions at all). Mobile calls this same /api/notify route for the same
+  // reason — this is the one shared "server" both platforms use.
+  const notifyMessageRecipients = async (body: string) => {
+    if (!user) return;
+    try {
+      const idToken = await user.getIdToken();
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` };
+      if (isDM) {
+        const otherId = conversation.participants.find((p: string) => p !== user.uid);
+        if (!otherId) return;
+        await fetch("/api/notify", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            recipientId: otherId,
+            senderName: profile?.displayName || user.displayName || "Someone",
+            senderPhotoUrl: profile?.photoURL || user.photoURL || "",
+            body,
+            chatId: parentId,
+            collectionName: parentCollection,
+          }),
+        });
+      } else {
+        await Promise.all(
+          (conversation as any).members
+            .filter((m: any) => m.uid !== user.uid)
+            .map((m: any) =>
+              fetch("/api/notify", {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  recipientId: m.uid,
+                  senderName: `${profile?.displayName || user.displayName || "Someone"} in ${displayName}`,
+                  senderPhotoUrl: profile?.photoURL || user.photoURL || "",
+                  body,
+                  chatId: parentId,
+                  collectionName: parentCollection,
+                }),
+              })
+            )
+        );
+      }
+    } catch (err) {
+      console.error("Notify error:", err);
+    }
+  };
+
   // ─── Send message ─────────────────────────────────────────────────────────
   const sendMessage = async () => {
     if (!input.trim() || !user || isLocked) return;
@@ -398,52 +490,135 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
 
       await updateDoc(parentRef, updateData);
 
-      // Trigger FCM Push Notification
-      if (isDM) {
-        const otherId = conversation.participants.find((p: string) => p !== user.uid);
-        if (otherId) {
-          fetch("/api/notify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              recipientId: otherId,
-              senderName: profile?.displayName || user.displayName || "Someone",
-              senderPhotoUrl: profile?.photoURL || user.photoURL || "",
-              body: text,
-              chatId: parentId,
-              collectionName: parentCollection,
-            }),
-          }).catch(err => console.error("FCM Notify error:", err));
-        }
-      } else {
-        (conversation as any).members.forEach((m: any) => {
-          if (m.uid !== user.uid) {
-            fetch("/api/notify", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                recipientId: m.uid,
-                senderName: `${profile?.displayName || user.displayName || "Someone"} in ${displayName}`,
-                senderPhotoUrl: profile?.photoURL || user.photoURL || "",
-                body: text,
-                chatId: parentId,
-                collectionName: parentCollection,
-              }),
-            }).catch(err => console.error("FCM Notify error:", err));
-          }
-        });
-      }
+      notifyMessageRecipients(text).catch((err) => console.error("Notify error:", err));
 
       // If it's the first message in a pending DM, notify the recipient via email route
       if (isDM && isPending && visibleMessages.length === 0) {
-        fetch("/api/notify/request", {
-          method: "POST",
-          body: JSON.stringify({ toEmail: conversation.other.email, fromName: user.displayName }),
-        }).catch(err => console.error("Notify request error:", err));
+        user.getIdToken().then((idToken) =>
+          fetch("/api/notify/request", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+            body: JSON.stringify({ toEmail: conversation.other.email, fromName: user.displayName }),
+          })
+        ).catch(err => console.error("Notify request error:", err));
       }
     } finally {
       setSending(false);
     }
+  };
+
+  // ─── Send a media message (image/file/voice) ───────────────────────────────
+  const sendMediaMessage = async (file: File, mediaType: ChatMediaType, durationMs?: number, caption?: string) => {
+    if (!user || isLocked) return;
+    setShowAttachMenu(false);
+    setUploading(true);
+    try {
+      const uploaded = await uploadChatMediaFile(file, mediaType, parentId, !isDM, durationMs);
+      const msgRef = messagesRef(parentCollection, parentId);
+      await addDoc(msgRef, {
+        text: caption ?? "",
+        senderId: user.uid,
+        timestamp: serverTimestamp(),
+        type: "text",
+        mediaType: uploaded.mediaType,
+        mediaUrl: uploaded.mediaUrl,
+        mediaMeta: uploaded.mediaMeta,
+      } satisfies Omit<MessageDoc, "id">);
+
+      const preview =
+        mediaType === "image" ? "📷 Photo" : mediaType === "voice" ? "🎤 Voice message" : `📎 ${uploaded.mediaMeta.fileName ?? "File"}`;
+      const parentRef = doc(db, parentCollection, parentId);
+      const updateData: any = { lastMessage: preview, lastMessageAt: serverTimestamp() };
+      if (isDM) {
+        const otherId = conversation.participants.find((p: string) => p !== user.uid);
+        if (otherId) updateData[`unreadCount.${otherId}`] = increment(1);
+      } else {
+        (conversation as any).members.forEach((m: any) => {
+          if (m.uid !== user.uid) updateData[`unreadCount.${m.uid}`] = increment(1);
+        });
+      }
+      await updateDoc(parentRef, updateData);
+      notifyMessageRecipients(preview).catch((err) => console.error("Notify error:", err));
+    } catch (error) {
+      console.error("Media send error:", error);
+      alert(error instanceof Error ? error.message : "Upload failed. Please try again.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handlePickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) setPendingMedia({ file, type: "image" });
+  };
+
+  const handlePickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) setPendingMedia({ file, type: "file" });
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === "file") {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          const type = file.type.startsWith("image/") ? "image" : "file";
+          setPendingMedia({ file, type });
+          break;
+        }
+      }
+    }
+  };
+
+  const handleStartRecording = async () => {
+    setShowAttachMenu(false);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      recordChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordChunksRef.current.push(e.data);
+      };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setRecording(true);
+      setRecordMs(0);
+      recordTimerRef.current = setInterval(() => setRecordMs((ms) => ms + 1000), 1000);
+    } catch (error) {
+      console.error("Could not start recording:", error);
+      alert("Microphone unavailable — check browser permissions.");
+    }
+  };
+
+  const stopRecordingStream = () => {
+    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
+    setRecording(false);
+  };
+
+  const handleStopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    const durationMs = recordMs;
+    recorder.onstop = () => {
+      const blob = new Blob(recordChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+      const file = new File([blob], `voice-note.${blob.type.includes("mp4") ? "m4a" : "webm"}`, { type: blob.type });
+      sendMediaMessage(file, "voice", durationMs);
+    };
+    recorder.stop();
+    stopRecordingStream();
+  };
+
+  const handleCancelRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder) recorder.onstop = null;
+    recorder?.stop();
+    stopRecordingStream();
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -634,6 +809,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
     }
   };
 
+  const assignees: Array<{ uid: string; name: string }> = isDM
+    ? [
+        { uid: user?.uid ?? "", name: "You" },
+        { uid: conversation.other.uid, name: conversation.other.displayName },
+      ]
+    : (conversation as any).members.map((m: { uid: string }) => ({
+        uid: m.uid,
+        name: m.uid === user?.uid ? "You" : memberProfiles[m.uid] ?? "Unknown",
+      }));
+
   return (
     <div 
       onContextMenu={handleContextMenu}
@@ -663,8 +848,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
                 </div>
               )}
             </div>
-            {isDM && (liveProfile?.status === "online") && (
-              <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-[#3dfc82] rounded-full border-2 border-white dark:border-[#11131a] shadow-[0_0_8px_rgba(61,252,130,0.6)]" />
+            {headerDotColor && (
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white dark:border-[#11131a] ${
+                  headerDotColor === "green"
+                    ? "bg-[#3dfc82] shadow-[0_0_8px_rgba(61,252,130,0.6)]"
+                    : headerDotColor === "red"
+                      ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+                      : "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]"
+                }`}
+              />
             )}
           </div>
           <div>
@@ -689,7 +882,21 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {(openQuestionsCount > 0 || pendingTasksCount > 0) && (
+            <div className="hidden sm:flex items-center gap-1.5">
+              {openQuestionsCount > 0 && (
+                <span className="text-[10px] font-medium text-zinc-500 bg-zinc-200/60 dark:bg-zinc-800/60 px-2 py-1 rounded-full">
+                  ❓ {openQuestionsCount}
+                </span>
+              )}
+              {pendingTasksCount > 0 && (
+                <span className="text-[10px] font-medium text-zinc-500 bg-zinc-200/60 dark:bg-zinc-800/60 px-2 py-1 rounded-full">
+                  📋 {pendingTasksCount}
+                </span>
+              )}
+            </div>
+          )}
           {!isDM && (
             <motion.button
               onClick={() => setShowGroupSettings(true)}
@@ -713,6 +920,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
           )}
         </div>
       </header>
+
+      {unreadOnOpen !== null && unreadOnOpen >= 3 && !digestDismissed && (
+        <DigestBanner
+          unreadCount={unreadOnOpen}
+          openQuestionsCount={openQuestionsCount}
+          pendingTasksCount={pendingTasksCount}
+          pendingDecisionsCount={pendingDecisionsCount}
+          onDismiss={() => setDigestDismissed(true)}
+        />
+      )}
 
       {/* ─── Messages Feed ───────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-2 bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-[#11131a] dark:to-[#0e1015]">
@@ -793,6 +1010,9 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
             status={getMessageStatus(msg)}
             forwarded={msg.forwarded}
             edited={msg.edited}
+            mediaType={msg.mediaType}
+            mediaUrl={msg.mediaUrl}
+            mediaMeta={msg.mediaMeta}
             selected={selectedMessageIds.includes(msg.id)}
             selectionMode={selectionMode}
             onToggleSelect={msg.type === "text" ? () => toggleMessageSelection(msg.id) : undefined}
@@ -858,6 +1078,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
                 Edit
               </button>
             )}
+            {selectedEditableMessage && (
+              <button
+                type="button"
+                onClick={() => setShowTagModal(true)}
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-100 px-3 py-2 text-xs font-bold text-zinc-700 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                <TagSimple size={15} weight="bold" />
+                Mark as…
+              </button>
+            )}
             <button
               type="button"
               onClick={deleteSelectedForMe}
@@ -888,6 +1118,23 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
               Forward
             </button>
           </div>
+        ) : recording ? (
+          <div className="flex items-center gap-3 bg-white dark:bg-zinc-900/40 border border-zinc-300 dark:border-zinc-800/80 rounded-2xl px-4 py-3">
+            <button type="button" onClick={handleCancelRecording} className="text-zinc-500 hover:text-red-500 transition-colors">
+              <X size={18} />
+            </button>
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <span className="flex-1 text-sm text-zinc-700 dark:text-zinc-300">
+              Recording… {Math.floor(recordMs / 60000)}:{String(Math.floor((recordMs % 60000) / 1000)).padStart(2, "0")}
+            </span>
+            <button
+              type="button"
+              onClick={handleStopRecording}
+              className="w-9 h-9 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl flex items-center justify-center transition-colors"
+            >
+              <Stop size={16} weight="fill" />
+            </button>
+          </div>
         ) : (
           <form
             onSubmit={handleSend}
@@ -895,6 +1142,83 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
               isLocked && !(!isRequester) ? "opacity-40 pointer-events-none blur-[1px]" : ""
             }`}
           >
+            <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handlePickImage} />
+            <input ref={fileInputRef} type="file" className="hidden" onChange={handlePickFile} />
+
+            <AnimatePresence>
+              {showAttachMenu && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                  transition={spring}
+                  className="absolute bottom-full left-2 mb-3 flex flex-col gap-1 rounded-2xl border border-zinc-200 bg-white p-2 shadow-2xl dark:border-white/[0.08] dark:bg-[#1a1d28] min-w-[180px]"
+                >
+                  <button
+                    type="button"
+                    onClick={() => { setShowAttachMenu(false); imageInputRef.current?.click(); }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    <ImageIcon size={16} weight="fill" /> Photo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAttachMenu(false); fileInputRef.current?.click(); }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    <FileText size={16} weight="fill" /> File · up to 10MB
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleStartRecording}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    <Microphone size={16} weight="fill" /> Voice note
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <motion.button
+              type="button"
+              onClick={() => setShowAttachMenu((current) => !current)}
+              disabled={uploading}
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              transition={spring}
+              className="mb-1 p-2 text-zinc-500 hover:text-emerald-400 transition-colors disabled:opacity-40"
+              title="Attach"
+            >
+              {uploading ? (
+                <span className="block w-5 h-5 rounded-full border-2 border-zinc-400 border-t-transparent animate-spin" />
+              ) : (
+                <Paperclip size={20} />
+              )}
+            </motion.button>
+
+            {pendingMedia && (
+              <div className="absolute bottom-full left-0 mb-3 ml-2 p-2 bg-white dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 shadow-xl flex items-center gap-3 animate-in fade-in zoom-in duration-200">
+                <div className="w-10 h-10 relative rounded-lg overflow-hidden bg-zinc-100 dark:bg-zinc-900 flex items-center justify-center flex-shrink-0">
+                  {pendingMedia.type === "image" ? (
+                    <img src={URL.createObjectURL(pendingMedia.file)} alt="Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <FileText size={20} className="text-zinc-500" />
+                  )}
+                </div>
+                <div className="flex flex-col flex-1 min-w-[120px] max-w-[180px]">
+                  <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate">{pendingMedia.file.name}</span>
+                  <span className="text-[10px] text-zinc-500">{(pendingMedia.file.size / 1024).toFixed(0)} KB</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPendingMedia(null)}
+                  className="p-1.5 text-zinc-500 hover:text-red-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors flex-shrink-0"
+                >
+                  <X size={14} weight="bold" />
+                </button>
+              </div>
+            )}
+
             <AnimatePresence>
               {showEmojiPicker && (
                 <motion.div
@@ -936,22 +1260,37 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleComposerKeyDown}
+              onPaste={handlePaste}
               disabled={isLocked}
               placeholder={isLocked ? (isRequester ? "Waiting for acceptance..." : "Accept to reply...") : "Type a message..."}
               rows={1}
               className="max-h-32 min-h-10 flex-1 resize-none bg-transparent py-2.5 text-sm leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 disabled:cursor-not-allowed dark:text-zinc-200 dark:placeholder:text-zinc-600"
             />
 
-            <motion.button
-              type="submit"
-              disabled={!input.trim() || isLocked || sending}
-              whileHover={{ scale: 1.08 }}
-              whileTap={{ scale: 0.92 }}
-              transition={spring}
-              className="w-9 h-9 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
-            >
-              <PaperPlaneTilt size={16} weight="fill" />
-            </motion.button>
+            {input.trim() ? (
+              <motion.button
+                type="submit"
+                disabled={isLocked || sending}
+                whileHover={{ scale: 1.08 }}
+                whileTap={{ scale: 0.92 }}
+                transition={spring}
+                className="w-9 h-9 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/10 disabled:opacity-40 disabled:pointer-events-none transition-colors flex-shrink-0 cursor-pointer"
+              >
+                <PaperPlaneTilt size={16} weight="fill" />
+              </motion.button>
+            ) : (
+              <motion.button
+                type="button"
+                onClick={handleStartRecording}
+                disabled={isLocked || sending}
+                whileHover={{ scale: 1.08 }}
+                whileTap={{ scale: 0.92 }}
+                transition={spring}
+                className="w-9 h-9 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/10 disabled:opacity-40 disabled:pointer-events-none transition-colors flex-shrink-0 cursor-pointer"
+              >
+                <Microphone size={16} weight="fill" />
+              </motion.button>
+            )}
           </form>
         )}
       </div>
@@ -1189,8 +1528,20 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
         <UserProfileModal
           profile={liveProfile}
           onClose={() => setShowUserInfo(false)}
+          chatId={parentId}
+          myUid={user?.uid}
         />
       )}
+
+      <MessageTagModal
+        open={showTagModal}
+        onClose={() => { setShowTagModal(false); clearSelection(); }}
+        message={selectedEditableMessage ? { id: selectedEditableMessage.id, text: selectedEditableMessage.text } : null}
+        parentCollection={parentCollection}
+        parentId={parentId}
+        myUid={user?.uid ?? ""}
+        assignees={assignees}
+      />
     </div>
   );
 };

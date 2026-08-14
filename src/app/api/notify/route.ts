@@ -1,8 +1,27 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { adminMessaging, adminDb } from "@/lib/firebase-admin";
+import { adminAuth, adminMessaging, adminDb } from "@/lib/firebase-admin";
+
+// Now called by both the web app and the mobile app (which has no Cloud
+// Functions backend of its own — see root README's "Server architecture"
+// section) so this needs real auth, not just "any signed-in web session".
+async function verifyCaller(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  const idToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!idToken) return null;
+  try {
+    return await adminAuth.verifyIdToken(idToken);
+  } catch {
+    return null;
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
+    const decoded = await verifyCaller(request);
+    if (!decoded) {
+      return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    }
+
     const { recipientId, title, body, data, chatId, collectionName, senderName, senderPhotoUrl } = await request.json();
 
     if (!recipientId || (!title && !senderName) || !body) {

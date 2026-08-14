@@ -21,6 +21,7 @@ export const COLLECTIONS = {
   CHATS: "chats",
   GROUPS: "groups",
   OTP: "otps",
+  FOLLOW_UPS: "followUps",
 } as const;
 
 // ─── Type definitions ─────────────────────────────────────────────────────────
@@ -67,6 +68,16 @@ export interface GroupDoc {
   lastMessageAt?: unknown;
 }
 
+export interface MessageMediaMeta {
+  fileName?: string;
+  sizeBytes: number;
+  mimeType: string;
+  /** Voice notes only. */
+  durationMs?: number;
+  /** Cloudinary public id, needed to delete the asset later. */
+  publicId: string;
+}
+
 export interface MessageDoc {
   text: string;
   senderId: string;
@@ -76,6 +87,63 @@ export interface MessageDoc {
   forwarded?: boolean;
   edited?: boolean;
   editedAt?: unknown;
+  /** Present when this message carries an attachment; `text` doubles as an optional caption for image/file. */
+  mediaType?: "image" | "file" | "voice";
+  mediaUrl?: string;
+  mediaMeta?: MessageMediaMeta;
+}
+
+/** A message tagged as a Question — one per source message. */
+export interface QuestionDoc {
+  sourceMessageId: string;
+  sourceText: string;
+  askedBy: string;
+  status: "open" | "answered";
+  answerText?: string;
+  answeredBy?: string;
+  createdAt: unknown;
+  answeredAt?: unknown;
+}
+
+/** A message tagged as a Decision. */
+export interface DecisionDoc {
+  sourceMessageId: string;
+  sourceText: string;
+  summary: string;
+  decidedBy: string[];
+  createdBy: string;
+  createdAt: unknown;
+}
+
+/** A message turned into a Task. */
+export interface TaskDoc {
+  sourceMessageId: string;
+  sourceText: string;
+  title: string;
+  assignedTo: string;
+  createdBy: string;
+  dueAt: unknown;
+  status: "pending" | "done";
+  createdAt: unknown;
+  completedAt?: unknown;
+}
+
+/**
+ * A personal reminder attached to a message — owned by the user who set it,
+ * not shared with the rest of the conversation. Lives in a top-level
+ * collection (not nested under the chat) so the scheduled Cloud Function that
+ * delivers due reminders can run one flat query instead of a collectionGroup.
+ * Identical shape to the mobile app's FollowUpDoc (mobile/src/lib/firestore.ts).
+ */
+export interface FollowUpDoc {
+  uid: string;
+  chatId: string;
+  isGroup: boolean;
+  messageId: string;
+  sourceText: string;
+  remindAt: unknown;
+  status: "pending" | "sent" | "dismissed";
+  createdAt: unknown;
 }
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
@@ -129,4 +197,21 @@ export function messagesRef(
   parentId: string
 ) {
   return collection(db, parentCollection, parentId, "messages");
+}
+
+export function questionsRef(parentCollection: "chats" | "groups", parentId: string) {
+  return collection(db, parentCollection, parentId, "questions");
+}
+
+export function decisionsRef(parentCollection: "chats" | "groups", parentId: string) {
+  return collection(db, parentCollection, parentId, "decisions");
+}
+
+export function tasksRef(parentCollection: "chats" | "groups", parentId: string) {
+  return collection(db, parentCollection, parentId, "tasks");
+}
+
+/** Top-level — see FollowUpDoc for why this isn't nested under the chat. */
+export function followUpsRef() {
+  return collection(db, COLLECTIONS.FOLLOW_UPS);
 }

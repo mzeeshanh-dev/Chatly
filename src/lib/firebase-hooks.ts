@@ -7,7 +7,7 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   collection,
   query,
@@ -19,7 +19,18 @@ import {
   getDocs,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { COLLECTIONS, type ChatDoc, type GroupDoc, type FirestoreUser } from "@/lib/firestore";
+import {
+  COLLECTIONS,
+  questionsRef,
+  decisionsRef,
+  tasksRef,
+  type ChatDoc,
+  type GroupDoc,
+  type FirestoreUser,
+  type QuestionDoc,
+  type DecisionDoc,
+  type TaskDoc,
+} from "@/lib/firestore";
 import type { SelectedConversation } from "@/components/chat/ChatList";
 
 // ─── Keys ─────────────────────────────────────────────────────────────────────
@@ -200,4 +211,94 @@ export function useLiveChatDoc(
     enabled: Boolean(docId),
     staleTime: Infinity,
   });
+}
+
+// ─── useTrackedItems ───────────────────────────────────────────────────────────
+/**
+ * Live Questions/Decisions/Tasks for one conversation — mirrors mobile's
+ * TrackedItemsCard.tsx. Plain useState/onSnapshot rather than TanStack Query
+ * since this only ever backs one open modal at a time, no cross-component
+ * cache sharing needed.
+ */
+export function useTrackedItems(parentCollection: "chats" | "groups", parentId: string | undefined) {
+  const [questions, setQuestions] = useState<Array<QuestionDoc & { id: string }>>([]);
+  const [decisions, setDecisions] = useState<Array<DecisionDoc & { id: string }>>([]);
+  const [tasks, setTasks] = useState<Array<TaskDoc & { id: string }>>([]);
+
+  useEffect(() => {
+    if (!parentId) return;
+    const unsub = onSnapshot(
+      query(questionsRef(parentCollection, parentId), orderBy("createdAt", "desc")),
+      (snap) => setQuestions(snap.docs.map((d) => ({ id: d.id, ...(d.data() as QuestionDoc) }))),
+      (err) => console.warn("questions onSnapshot error:", err)
+    );
+    return unsub;
+  }, [parentCollection, parentId]);
+
+  useEffect(() => {
+    if (!parentId) return;
+    const unsub = onSnapshot(
+      query(decisionsRef(parentCollection, parentId), orderBy("createdAt", "desc")),
+      (snap) => setDecisions(snap.docs.map((d) => ({ id: d.id, ...(d.data() as DecisionDoc) }))),
+      (err) => console.warn("decisions onSnapshot error:", err)
+    );
+    return unsub;
+  }, [parentCollection, parentId]);
+
+  useEffect(() => {
+    if (!parentId) return;
+    const unsub = onSnapshot(
+      query(tasksRef(parentCollection, parentId), orderBy("createdAt", "desc")),
+      (snap) => setTasks(snap.docs.map((d) => ({ id: d.id, ...(d.data() as TaskDoc) }))),
+      (err) => console.warn("tasks onSnapshot error:", err)
+    );
+    return unsub;
+  }, [parentCollection, parentId]);
+
+  return { questions, decisions, tasks };
+}
+
+// ─── useTrackedItemCounts ──────────────────────────────────────────────────────
+/**
+ * Live open-question/pending-task/decision counts for one conversation,
+ * computed client-side from the subcollections. This app has no Cloud
+ * Functions backend (see root README's "Server architecture" section), so
+ * there's no server-maintained denormalized counter field to read instead.
+ */
+export function useTrackedItemCounts(parentCollection: "chats" | "groups", parentId: string | undefined) {
+  const [openQuestionsCount, setOpenQuestionsCount] = useState(0);
+  const [pendingTasksCount, setPendingTasksCount] = useState(0);
+  const [pendingDecisionsCount, setPendingDecisionsCount] = useState(0);
+
+  useEffect(() => {
+    if (!parentId) return;
+    const unsub = onSnapshot(
+      questionsRef(parentCollection, parentId),
+      (snap) => setOpenQuestionsCount(snap.docs.filter((d) => (d.data() as QuestionDoc).status === "open").length),
+      (err) => console.warn("questions count onSnapshot error:", err)
+    );
+    return unsub;
+  }, [parentCollection, parentId]);
+
+  useEffect(() => {
+    if (!parentId) return;
+    const unsub = onSnapshot(
+      tasksRef(parentCollection, parentId),
+      (snap) => setPendingTasksCount(snap.docs.filter((d) => (d.data() as TaskDoc).status === "pending").length),
+      (err) => console.warn("tasks count onSnapshot error:", err)
+    );
+    return unsub;
+  }, [parentCollection, parentId]);
+
+  useEffect(() => {
+    if (!parentId) return;
+    const unsub = onSnapshot(
+      decisionsRef(parentCollection, parentId),
+      (snap) => setPendingDecisionsCount(snap.size),
+      (err) => console.warn("decisions count onSnapshot error:", err)
+    );
+    return unsub;
+  }, [parentCollection, parentId]);
+
+  return { openQuestionsCount, pendingTasksCount, pendingDecisionsCount };
 }

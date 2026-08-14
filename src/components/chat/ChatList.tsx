@@ -12,6 +12,7 @@ import { ChatItemSkeleton } from "@/components/ui/Skeleton";
 import { formatDistanceToNow } from "date-fns";
 import clsx from "clsx";
 import { useChatsQuery, useGroupsQuery } from "@/lib/firebase-hooks";
+import { getPresenceDotColor, type PresenceDotColor } from "@/lib/presence";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 
@@ -102,16 +103,25 @@ function usePresence(uid?: string) {
 }
 
 // ─── Avatar utility ───────────────────────────────────────────────────────────
-function Avatar({ 
-  name, 
-  photoURL, 
-  online, 
-  size = 10 
-}: { 
-  name: string; 
-  photoURL?: string | null; 
-  online?: boolean; 
-  size?: number 
+const DOT_CLASSES: Record<PresenceDotColor, string> = {
+  green: "bg-[#3dfc82] shadow-[0_0_8px_rgba(61,252,130,0.6)]",
+  red: "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]",
+  yellow: "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]",
+};
+
+function Avatar({
+  name,
+  photoURL,
+  online,
+  dotColor,
+  size = 10,
+}: {
+  name: string;
+  photoURL?: string | null;
+  online?: boolean;
+  /** Overrides the default green/gray online dot — see getPresenceDotColor(). */
+  dotColor?: PresenceDotColor | null;
+  size?: number;
 }) {
   return (
     <div className={`relative w-${size} h-${size} flex-shrink-0`}>
@@ -124,34 +134,41 @@ function Avatar({
           </div>
         )}
       </div>
-      {online != null && (
+      {dotColor ? (
+        <span className={clsx("absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#12141c] transition-colors duration-500", DOT_CLASSES[dotColor])} />
+      ) : online != null ? (
         <span className={clsx(
-          "absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#12141c] transition-colors duration-500", 
+          "absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#12141c] transition-colors duration-500",
           online ? "bg-[#3dfc82] shadow-[0_0_8px_rgba(61,252,130,0.6)]" : "bg-zinc-600"
         )} />
-      )}
+      ) : null}
     </div>
   );
 }
 
-function ChatListItem({ 
-  conv, 
-  isSelected, 
+function ChatListItem({
+  conv,
+  isSelected,
   onSelect,
-  currentUser
-}: { 
-  conv: SelectedConversation; 
-  isSelected: boolean; 
+  currentUser,
+  myBlockedUsers,
+}: {
+  conv: SelectedConversation;
+  isSelected: boolean;
   onSelect: (c: SelectedConversation) => void;
   currentUser: any;
+  myBlockedUsers: string[];
 }) {
   const otherUid = conv.type === "dm" ? conv.participants.find(p => p !== currentUser?.uid) : undefined;
   const liveProfile = usePresence(otherUid);
-  
+
   const label = conv.type === "dm" ? (liveProfile?.displayName || conv.other.displayName) : conv.name;
   const photo = conv.type === "dm" ? (liveProfile?.photoURL || conv.other.photoURL) : conv.photoURL;
   const isOnline = conv.type === "dm" ? liveProfile?.status === "online" : undefined;
   const isPending = conv.type === "dm" && conv.status === "pending";
+  const isBlocked =
+    conv.type === "dm" && Boolean(otherUid && (myBlockedUsers.includes(otherUid) || liveProfile?.blockedUsers?.includes(currentUser?.uid)));
+  const dotColor = conv.type === "dm" ? getPresenceDotColor({ status: conv.status, isBlocked, isOnline: Boolean(isOnline) }) : null;
   const unread = currentUser ? conv.unreadCount?.[currentUser.uid] : 0;
 
   return (
@@ -172,11 +189,12 @@ function ChatListItem({
       )}
 
       <div className="relative z-10 flex items-center gap-3 w-full">
-        <Avatar 
-          name={label} 
-          photoURL={photo} 
-          size={10} 
+        <Avatar
+          name={label}
+          photoURL={photo}
+          size={10}
           online={isOnline}
+          dotColor={dotColor}
         />
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
@@ -217,7 +235,8 @@ function ChatListItem({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 const ChatList = ({ selected, onSelect, view, onNewChat, onNewGroup, mobileVisible }: ChatListProps) => {
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, profile: myProfile } = useAuth();
+  const myBlockedUsers = myProfile?.blockedUsers ?? [];
   const [subTab, setSubTab] = useState<SubTab>("all");
   const [search, setSearch] = useState("");
 
@@ -306,12 +325,13 @@ const ChatList = ({ selected, onSelect, view, onNewChat, onNewGroup, mobileVisib
                   (selected.type === "dm" ? selected.chatId === (conv as { chatId: string }).chatId : (selected as { groupId: string }).groupId === (conv as { groupId: string }).groupId);
 
                 return (
-                  <ChatListItem 
-                    key={id} 
-                    conv={conv} 
-                    isSelected={isSelected} 
-                    onSelect={onSelect} 
-                    currentUser={currentUser} 
+                  <ChatListItem
+                    key={id}
+                    conv={conv}
+                    isSelected={isSelected}
+                    onSelect={onSelect}
+                    currentUser={currentUser}
+                    myBlockedUsers={myBlockedUsers}
                   />
                 );
               })

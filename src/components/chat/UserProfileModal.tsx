@@ -5,15 +5,19 @@ import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Phone, MapPin, EnvelopeSimple, User } from "@phosphor-icons/react";
 import type { FirestoreUser } from "@/lib/firestore";
+import TrackedItemsPanel from "./TrackedItemsPanel";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 
 interface UserProfileModalProps {
   profile: FirestoreUser;
   onClose: () => void;
+  /** Present when opened from a DM — lets this modal show that conversation's tracked items. */
+  chatId?: string;
+  myUid?: string;
 }
 
-const UserProfileModal = ({ profile, onClose }: UserProfileModalProps) => {
+const UserProfileModal = ({ profile, onClose, chatId, myUid }: UserProfileModalProps) => {
   return (
     <AnimatePresence>
       <motion.div
@@ -54,6 +58,15 @@ const UserProfileModal = ({ profile, onClose }: UserProfileModalProps) => {
             </div>
 
             <div className="h-px bg-zinc-200 dark:bg-zinc-800/40" />
+
+            {chatId && myUid && (
+              <TrackedItemsPanel
+                parentCollection="chats"
+                parentId={chatId}
+                myUid={myUid}
+                resolveName={(uid) => (uid === myUid ? "You" : profile.displayName)}
+              />
+            )}
 
             {/* Additional Details */}
             <div className="space-y-4">

@@ -54,17 +54,24 @@ const NewChatModal = ({ onClose, onSelect }: NewChatModalProps) => {
       where("participants", "array-contains", user.uid)
     );
 
-    const unsub = onSnapshot(q, (snap) => {
-      setExistingChats(
-        snap.docs.map((d) => ({
-          id: d.id,
-          participants: d.data().participants,
-          status: d.data().status,
-          requestedBy: d.data().requestedBy,
-        }))
-      );
-      setChatsLoading(false);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setExistingChats(
+          snap.docs.map((d) => ({
+            id: d.id,
+            participants: d.data().participants,
+            status: d.data().status,
+            requestedBy: d.data().requestedBy,
+          }))
+        );
+        setChatsLoading(false);
+      },
+      (err) => {
+        console.warn("Error listening to existing chats:", err);
+        setChatsLoading(false);
+      }
+    );
 
     return unsub;
   }, [user]);
