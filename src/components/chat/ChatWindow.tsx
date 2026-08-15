@@ -623,6 +623,12 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pendingMedia) {
+      await sendMediaMessage(pendingMedia.file, pendingMedia.type, undefined, input.trim());
+      setPendingMedia(null);
+      setInput("");
+      return;
+    }
     await sendMessage();
   };
 
@@ -631,6 +637,12 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
     if (e.altKey) return;
 
     e.preventDefault();
+    if (pendingMedia) {
+      await sendMediaMessage(pendingMedia.file, pendingMedia.type, undefined, input.trim());
+      setPendingMedia(null);
+      setInput("");
+      return;
+    }
     await sendMessage();
   };
 
@@ -1015,7 +1027,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
             mediaMeta={msg.mediaMeta}
             selected={selectedMessageIds.includes(msg.id)}
             selectionMode={selectionMode}
-            onToggleSelect={msg.type === "text" ? () => toggleMessageSelection(msg.id) : undefined}
+            onToggleSelect={msg.type !== "system" ? () => toggleMessageSelection(msg.id) : undefined}
           />
         ))}
         <div ref={bottomRef} />
@@ -1152,28 +1164,37 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: 8, scale: 0.96 }}
                   transition={spring}
-                  className="absolute bottom-full left-2 mb-3 flex flex-col gap-1 rounded-2xl border border-zinc-200 bg-white p-2 shadow-2xl dark:border-white/[0.08] dark:bg-[#1a1d28] min-w-[180px]"
+                  className="absolute bottom-full left-2 mb-3 grid grid-cols-3 gap-2 rounded-2xl border border-zinc-200 bg-white p-3 shadow-2xl dark:border-white/[0.08] dark:bg-[#1a1d28] min-w-[240px]"
                 >
                   <button
                     type="button"
                     onClick={() => { setShowAttachMenu(false); imageInputRef.current?.click(); }}
-                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors"
+                    className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors text-emerald-500"
                   >
-                    <ImageIcon size={16} weight="fill" /> Photo
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10">
+                      <ImageIcon size={20} weight="fill" />
+                    </div>
+                    <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Photo</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => { setShowAttachMenu(false); fileInputRef.current?.click(); }}
-                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors"
+                    className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors text-blue-500"
                   >
-                    <FileText size={16} weight="fill" /> File · up to 10MB
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500/10">
+                      <FileText size={20} weight="fill" />
+                    </div>
+                    <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Document</span>
                   </button>
                   <button
                     type="button"
-                    onClick={handleStartRecording}
-                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors"
+                    onClick={() => { setShowAttachMenu(false); handleStartRecording(); }}
+                    className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl hover:bg-zinc-100 dark:hover:bg-white/[0.06] transition-colors text-orange-500"
                   >
-                    <Microphone size={16} weight="fill" /> Voice note
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-orange-500/10">
+                      <Microphone size={20} weight="fill" />
+                    </div>
+                    <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Audio</span>
                   </button>
                 </motion.div>
               )}
@@ -1267,7 +1288,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
               className="max-h-32 min-h-10 flex-1 resize-none bg-transparent py-2.5 text-sm leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 disabled:cursor-not-allowed dark:text-zinc-200 dark:placeholder:text-zinc-600"
             />
 
-            {input.trim() ? (
+            {input.trim() || pendingMedia ? (
               <motion.button
                 type="submit"
                 disabled={isLocked || sending}

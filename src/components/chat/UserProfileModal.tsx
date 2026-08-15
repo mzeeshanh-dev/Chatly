@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Phone, MapPin, EnvelopeSimple, User } from "@phosphor-icons/react";
 import type { FirestoreUser } from "@/lib/firestore";
 import TrackedItemsPanel from "./TrackedItemsPanel";
+import SharedMedia from "./SharedMedia";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 
@@ -60,12 +61,23 @@ const UserProfileModal = ({ profile, onClose, chatId, myUid }: UserProfileModalP
             <div className="h-px bg-zinc-200 dark:bg-zinc-800/40" />
 
             {chatId && myUid && (
-              <TrackedItemsPanel
-                parentCollection="chats"
-                parentId={chatId}
-                myUid={myUid}
-                resolveName={(uid) => (uid === myUid ? "You" : profile.displayName)}
-              />
+              <>
+                <TrackedItemsPanel
+                  parentCollection="chats"
+                  parentId={chatId}
+                  myUid={myUid}
+                  resolveName={(uid) => (uid === myUid ? "You" : profile.displayName)}
+                />
+                
+                <div className="h-px bg-zinc-200 dark:bg-zinc-800/40 my-2" />
+                
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider mb-2">
+                    Shared Media
+                  </p>
+                  <SharedMedia parentCollection="chats" parentId={chatId} />
+                </div>
+              </>
             )}
 
             {/* Additional Details */}

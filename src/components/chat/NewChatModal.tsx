@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
-import { MagnifyingGlass, X } from "@phosphor-icons/react";
+import { MagnifyingGlass, X, ArrowUpRight } from "@phosphor-icons/react";
 import {
   collection,
   onSnapshot,
@@ -156,7 +156,7 @@ const NewChatModal = ({ onClose, onSelect }: NewChatModalProps) => {
   };
 
   // ─── Button label logic ───────────────────────────────────────────────────
-  const getButtonInfo = (u: FirestoreUser): { label: string; disabled: boolean; style: string } => {
+  const getButtonInfo = (u: FirestoreUser): { label: React.ReactNode; disabled: boolean; style: string } => {
     if (creating === u.uid) {
       return { label: "Opening...", disabled: true, style: "opacity-50" };
     }
@@ -178,7 +178,13 @@ const NewChatModal = ({ onClose, onSelect }: NewChatModalProps) => {
     if (chat.status === "pending") {
       const isRequester = chat.requestedBy === user?.uid;
       return {
-        label: isRequester ? "Pending ↗" : "Respond",
+        label: isRequester ? (
+          <span className="flex items-center gap-1">
+            Pending <ArrowUpRight size={14} weight="bold" />
+          </span>
+        ) : (
+          "Respond"
+        ),
         disabled: false,
         style: isRequester
           ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30"

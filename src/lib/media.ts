@@ -52,9 +52,12 @@ export async function uploadChatMediaFile(
   }
 
   const result = (await res.json()) as { url: string; publicId: string; sizeBytes: number };
+  const meta: MessageMediaMeta = { fileName: file.name, sizeBytes: result.sizeBytes, mimeType: file.type, publicId: result.publicId };
+  if (durationMs !== undefined) meta.durationMs = durationMs;
+
   return {
     mediaType,
     mediaUrl: result.url,
-    mediaMeta: { fileName: file.name, sizeBytes: result.sizeBytes, mimeType: file.type, durationMs, publicId: result.publicId },
+    mediaMeta: meta,
   };
 }

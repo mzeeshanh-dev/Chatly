@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "File must be 10MB or smaller." }, { status: 400 });
     }
 
-    const result = await uploadChatMedia(buffer, chatId, mediaType);
+    const result = await uploadChatMedia(buffer, chatId, mediaType, file.name);
     return NextResponse.json({ url: result.url, publicId: result.publicId, sizeBytes: buffer.byteLength });
   } catch (error: unknown) {
     console.error("Chat media upload API error:", error);

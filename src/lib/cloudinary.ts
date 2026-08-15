@@ -72,16 +72,27 @@ function resourceTypeFor(mediaType: ChatMediaType): "image" | "video" | "raw" {
   return "raw";
 }
 
-export async function uploadChatMedia(fileBuffer: Buffer, chatId: string, mediaType: ChatMediaType): Promise<UploadResult> {
+export async function uploadChatMedia(fileBuffer: Buffer, chatId: string, mediaType: ChatMediaType, fileName?: string): Promise<{url: string, publicId: string, format?: string}> {
   return new Promise((resolve, reject) => {
+    let ext = "";
+    if (fileName && fileName.includes(".")) {
+      ext = fileName.split(".").pop() || "";
+    }
+    
+    // Cloudinary uses the public_id for the final URL. If we append the extension here,
+    // the resulting secure_url will have the correct format, fixing "unknown format" bugs on download.
+    const uniqueId = require("crypto").randomUUID().replace(/-/g, "");
+    const customPublicId = ext ? `${uniqueId}.${ext}` : uniqueId;
+
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         folder: `${CLOUDINARY_APP_FOLDER}/chat-media/${chatId}`,
         resource_type: resourceTypeFor(mediaType),
+        public_id: customPublicId,
       },
       (error, result) => {
         if (error || !result) return reject(error ?? new Error("Upload failed"));
-        resolve({ url: result.secure_url, publicId: result.public_id });
+        resolve({ url: result.secure_url, publicId: result.public_id, format: result.format });
       }
     );
 
