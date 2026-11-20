@@ -1,80 +1,42 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/firebase";
-import {
-  doc,
-  getDoc,
-  deleteDoc,
-  setDoc,
-  serverTimestamp,
-  Timestamp,
-} from "firebase/firestore";
-import { COLLECTIONS } from "@/lib/firestore";
+import { FieldValue } from "firebase-admin/firestore";
+import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { asEmail, asOtp, getClientIp, handleApiError, readJson } from "@/lib/server/http";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
+import { consumeOtp } from "@/lib/server/otp";
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, code } = await request.json();
+    const body = await readJson(request);
+    const email = asEmail(body.email);
+    const code = asOtp(body.code);
 
-    if (!email || !code) {
-      return NextResponse.json(
-        { error: "email and code are required." },
-        { status: 400 }
-      );
-    }
+    await enforceRateLimit("verify-ip", getClientIp(request), { limit: 20, windowSeconds: 3600 });
+    await enforceRateLimit("verify-email", email, { limit: 10, windowSeconds: 3600 });
 
-    // Fetch OTP document
-    const otpRef = doc(db, "otps", email);
-    const otpSnap = await getDoc(otpRef);
+    const otp = await consumeOtp("register", email, code);
+    const uid = String(otp.uid);
+    const displayName = String(otp.displayName ?? "");
 
-    if (!otpSnap.exists()) {
-      return NextResponse.json(
-        { error: "No pending verification found for this email." },
-        { status: 404 }
-      );
-    }
-
-    const otpData = otpSnap.data();
-    const expiresAt = otpData.expiresAt as Timestamp;
-
-    // Check expiry
-    if (Timestamp.now().toMillis() > expiresAt.toMillis()) {
-      await deleteDoc(otpRef);
-      return NextResponse.json(
-        { error: "Verification code has expired. Please register again." },
-        { status: 410 }
-      );
-    }
-
-    // Validate code
-    if (otpData.code !== code) {
-      return NextResponse.json(
-        { error: "Incorrect verification code." },
-        { status: 422 }
-      );
-    }
-
-    // Activate — create the user profile in Firestore
-    await setDoc(doc(db, COLLECTIONS.USERS, otpData.uid), {
-      uid: otpData.uid,
-      displayName: otpData.displayName,
+    await adminAuth.updateUser(uid, { disabled: false, emailVerified: true });
+    await adminDb.collection("users").doc(uid).set({
+      uid,
+      displayName,
       email,
       photoURL: null,
       bio: "",
       phone: "",
       location: "",
       isActivated: true,
-      createdAt: serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       settings: { theme: "dark", notificationsEnabled: true },
       blockedUsers: [],
       acceptedContacts: [],
       fcmTokens: [],
     });
 
-    // Clean up the OTP document
-    await deleteDoc(otpRef);
-
     return NextResponse.json({ success: true });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Internal server error";
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (error) {
+    return handleApiError(error, "verify-otp");
   }
 }

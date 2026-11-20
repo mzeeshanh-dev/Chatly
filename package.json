@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "audit:prod": "npm audit --omit=dev",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -19,7 +23,6 @@
     "firebase": "^12.14.0",
     "firebase-admin": "^14.0.0",
     "framer-motion": "^12.40.0",
-    "js-cookie": "^3.0.8",
     "lucide-react": "^1.16.0",
     "next": "16.2.6",
     "nodemailer": "^8.0.10",
@@ -33,16 +36,16 @@
     }
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/postcss": "^4",
-    "@types/js-cookie": "^3.0.6",
     "@types/node": "^20",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
-    "ripgrep": "^0.3.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   }
 }

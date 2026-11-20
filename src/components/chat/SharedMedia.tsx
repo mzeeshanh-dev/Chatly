@@ -12,7 +12,7 @@ interface SharedMediaProps {
 }
 
 export default function SharedMedia({ parentCollection, parentId }: SharedMediaProps) {
-  const [media, setMedia] = useState<MessageDoc[]>([]);
+  const [media, setMedia] = useState<(MessageDoc & { id: string })[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,7 +24,7 @@ export default function SharedMedia({ parentCollection, parentId }: SharedMediaP
           orderBy("timestamp", "desc")
         );
         const snap = await getDocs(q);
-        setMedia(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as MessageDoc));
+        setMedia(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as MessageDoc & { id: string }));
       } catch (err) {
         console.error("Failed to fetch shared media:", err);
       } finally {

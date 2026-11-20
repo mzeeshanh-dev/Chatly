@@ -17,6 +17,10 @@ import { getPresenceDotColor, type PresenceDotColor } from "@/lib/presence";
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+/** Firestore Timestamp (or anything exposing toDate) as it arrives from snapshots. */
+export type TimestampLike = { toDate: () => Date } | null | undefined;
+export type GroupMemberEntry = { uid: string; status: "pending" | "accepted" };
+
 export type SelectedConversation =
   | {
       type: "dm";
@@ -26,9 +30,9 @@ export type SelectedConversation =
       status: "pending" | "active" | "rejected";
       requestedBy: string;
       unreadCount?: Record<string, number>;
-      lastRead?: Record<string, any>;
+      lastRead?: Record<string, unknown>;
       lastMessage?: string;
-      lastMessageAt?: any;
+      lastMessageAt?: unknown;
     }
   | {
       type: "group";
@@ -36,12 +40,12 @@ export type SelectedConversation =
       name: string;
       photoURL: string | null;
       adminId: string;
-      members: Array<{ uid: string; status: "pending" | "accepted" }>;
+      members: GroupMemberEntry[];
       requestedBy?: string;
       unreadCount?: Record<string, number>;
-      lastRead?: Record<string, any>;
+      lastRead?: Record<string, unknown>;
       lastMessage?: string;
-      lastMessageAt?: any;
+      lastMessageAt?: unknown;
       description?: string;
     };
 
@@ -156,7 +160,7 @@ function ChatListItem({
   conv: SelectedConversation;
   isSelected: boolean;
   onSelect: (c: SelectedConversation) => void;
-  currentUser: any;
+  currentUser: { uid: string } | null | undefined;
   myBlockedUsers: string[];
 }) {
   const otherUid = conv.type === "dm" ? conv.participants.find(p => p !== currentUser?.uid) : undefined;
@@ -167,7 +171,7 @@ function ChatListItem({
   const isOnline = conv.type === "dm" ? liveProfile?.status === "online" : undefined;
   const isPending = conv.type === "dm" && conv.status === "pending";
   const isBlocked =
-    conv.type === "dm" && Boolean(otherUid && (myBlockedUsers.includes(otherUid) || liveProfile?.blockedUsers?.includes(currentUser?.uid)));
+    conv.type === "dm" && Boolean(otherUid && (myBlockedUsers.includes(otherUid) || liveProfile?.blockedUsers?.includes(currentUser?.uid ?? "")));
   const dotColor = conv.type === "dm" ? getPresenceDotColor({ status: conv.status, isBlocked, isOnline: Boolean(isOnline) }) : null;
   const unread = currentUser ? conv.unreadCount?.[currentUser.uid] : 0;
 
@@ -222,7 +226,7 @@ function ChatListItem({
             {conv.type === "dm" && !isPending && !isOnline && (
               <span className="text-[10px] text-zinc-400 dark:text-zinc-500 whitespace-nowrap">
                 {liveProfile?.lastSeen 
-                  ? formatDistanceToNow((liveProfile.lastSeen as any).toDate(), { addSuffix: true })
+                  ? formatDistanceToNow((liveProfile.lastSeen as unknown as { toDate: () => Date }).toDate(), { addSuffix: true })
                   : ""}
               </span>
             )}

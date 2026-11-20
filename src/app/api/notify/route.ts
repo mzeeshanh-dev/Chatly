@@ -1,131 +1,82 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { adminAuth, adminMessaging, adminDb } from "@/lib/firebase-admin";
+import { adminMessaging, adminDb } from "@/lib/firebase-admin";
+import { ApiError, asString, handleApiError, readJson } from "@/lib/server/http";
+import { getConversation, membersOf, requireUser } from "@/lib/server/auth";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
 
-// Now called by both the web app and the mobile app (which has no Cloud
-// Functions backend of its own — see root README's "Server architecture"
-// section) so this needs real auth, not just "any signed-in web session".
-async function verifyCaller(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  const idToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!idToken) return null;
-  try {
-    return await adminAuth.verifyIdToken(idToken);
-  } catch {
-    return null;
-  }
-}
-
+// Shared by web and mobile (mobile has no Cloud Functions backend). The caller
+// must be authenticated and both caller and recipient must belong to the
+// referenced conversation, so it cannot be used to push-spam arbitrary users.
 export async function POST(request: NextRequest) {
   try {
-    const decoded = await verifyCaller(request);
-    if (!decoded) {
-      return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    const caller = await requireUser(request);
+    await enforceRateLimit("notify-push", caller.uid, { limit: 120, windowSeconds: 60 });
+
+    const body = await readJson(request);
+    const recipientId = asString(body.recipientId, "recipientId", { max: 128 });
+    const chatId = asString(body.chatId, "chatId", { max: 128 });
+    const messageBody = asString(body.body, "body", { max: 500 });
+    const collectionName = body.collectionName;
+    if (collectionName !== "chats" && collectionName !== "groups") {
+      throw new ApiError(400, "collectionName must be chats or groups.");
     }
+    const isGroup = collectionName === "groups";
+    const senderName = typeof body.senderName === "string" ? body.senderName.trim().slice(0, 100) : "";
+    const senderPhotoUrl =
+      typeof body.senderPhotoUrl === "string" && body.senderPhotoUrl.startsWith("https://")
+        ? body.senderPhotoUrl.slice(0, 500)
+        : "";
 
-    const { recipientId, title, body, data, chatId, collectionName, senderName, senderPhotoUrl } = await request.json();
-
-    if (!recipientId || (!title && !senderName) || !body) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    const conversation = await getConversation(chatId, isGroup);
+    const members = membersOf(conversation, isGroup);
+    if (!members.includes(caller.uid) || !members.includes(recipientId) || recipientId === caller.uid) {
+      throw new ApiError(403, "Not allowed to notify this user.");
     }
 
     const userDoc = await adminDb.collection("users").doc(recipientId).get();
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
+    if (!userDoc.exists) throw new ApiError(404, "User not found");
     const userData = userDoc.data();
 
-    // Check if notifications are disabled
     if (userData?.settings?.notificationsEnabled === false) {
       return NextResponse.json({ success: true, message: "User disabled notifications" });
     }
-
-    const tokens = userData?.fcmTokens || [];
+    const tokens: string[] = userData?.fcmTokens || [];
     if (tokens.length === 0) {
       return NextResponse.json({ success: true, message: "No active FCM tokens for user" });
     }
 
-    let finalTitle = title || senderName || "New Message";
+    const unreadCount = (conversation.unreadCount as Record<string, number> | undefined)?.[recipientId] || 0;
+    const name = senderName || "New Message";
+    const finalTitle =
+      unreadCount > 1 ? `Chatly • ${name} (${unreadCount} new messages)` : `Chatly • ${name}`;
 
-    // Fetch unread count if we have context
-    if (chatId && collectionName && senderName) {
-      const parentDoc = await adminDb.collection(collectionName).doc(chatId).get();
-      if (parentDoc.exists) {
-        const parentData = parentDoc.data();
-        const unreadCount = parentData?.unreadCount?.[recipientId] || 0;
-
-        if (unreadCount > 1) {
-          finalTitle = `Chatly • ${senderName} (${unreadCount} new messages)`;
-        } else {
-          finalTitle = `Chatly • ${senderName}`;
-        }
-      }
-    } else {
-      finalTitle = `Chatly • ${finalTitle}`;
-    }
-
-
-    const payload: any = {
+    const response = await adminMessaging.sendEachForMulticast({
       webpush: {
         notification: {
           title: finalTitle,
-          body,
-          icon: '/favicon.ico',
-          badge: '/favicon.ico',
-          vibrate: [200, 100, 200],
+          body: messageBody,
+          icon: "/favicon.ico",
+          badge: "/favicon.ico",
         },
-        fcmOptions: {
-          link: '/chat'
-        }
+        fcmOptions: { link: "/chat" },
       },
-      apns: {
-        payload: {
-          aps: {
-            alert: {
-              title: finalTitle,
-              body,
-            },
-            sound: "default"
-          }
-        }
-      },
-      android: {
-        priority: "high"
-      },
+      apns: { payload: { aps: { alert: { title: finalTitle, body: messageBody }, sound: "default" } } },
+      android: { priority: "high" },
+      data: { chatId, senderPhotoUrl, senderName: name, title: finalTitle, body: messageBody },
       tokens,
-    };
-    if (data || chatId || senderPhotoUrl || senderName || finalTitle || body) {
-      payload.data = {
-        ...(data || {}),
-        chatId: chatId || "",
-        senderPhotoUrl: senderPhotoUrl || "",
-        senderName: senderName || "",
-        title: finalTitle || "",
-        body: body || "",
-      };
+    });
+
+    // Prune tokens FCM reports as dead.
+    const dead = tokens.filter((_, i) => !response.responses[i]?.success);
+    if (dead.length > 0) {
+      await adminDb
+        .collection("users")
+        .doc(recipientId)
+        .update({ fcmTokens: tokens.filter((t) => !dead.includes(t)) });
     }
 
-    const response = await adminMessaging.sendEachForMulticast(payload);
-
-    // Cleanup invalid tokens
-    if (response.failureCount > 0) {
-      const failedTokens: string[] = [];
-      response.responses.forEach((resp: any, idx: number) => {
-        if (!resp.success) {
-          failedTokens.push(tokens[idx]);
-        }
-      });
-      if (failedTokens.length > 0) {
-        // Remove failed tokens from Firestore
-        const newTokens = tokens.filter((t: string) => !failedTokens.includes(t));
-        await adminDb.collection("users").doc(recipientId).update({
-          fcmTokens: newTokens,
-        });
-      }
-    }
-
-    return NextResponse.json({ success: true, responses: response });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true, sent: response.successCount });
+  } catch (error) {
+    return handleApiError(error, "notify");
   }
 }

@@ -1,15 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidateTag } from "next/cache";
-import { requireAdmin } from "@/lib/admin/auth";
+import { adminHandler } from "@/lib/admin/auth";
 import { ADMIN_DASHBOARD_TAG } from "@/lib/admin/cache";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { ApiError, jsonError, readJson } from "@/lib/server/http";
+
+const UID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Admin accounts cannot be suspended or deleted through the user-management API. */
+async function assertManageable(uid: string) {
+  if (!UID_RE.test(uid)) throw new ApiError(400, "Invalid uid.");
+  const admin = await adminDb.collection("admins").doc(uid).get();
+  const user = await adminAuth.getUser(uid).catch(() => null);
+  if (!user) throw new ApiError(404, "User not found.");
+  if (admin.exists || user.customClaims?.admin === true) {
+    throw new ApiError(403, "Admin accounts cannot be modified here.");
+  }
+}
 
 type Params = { params: Promise<{ uid: string }> };
 
-export async function PATCH(request: NextRequest, { params }: Params) {
-  await requireAdmin();
+async function patchHandler(request: NextRequest, { params }: Params) {
   const { uid } = await params;
-  const payload = (await request.json()) as {
+  const payload = (await readJson(request)) as {
     action?: "suspend" | "activate" | "update";
     displayName?: string;
     phone?: string;
@@ -19,13 +32,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   };
   const { action } = payload;
 
-  if (!uid || !action) {
-    return NextResponse.json({ error: "uid and action are required." }, { status: 400 });
+  if (!uid || !action || !["suspend", "activate", "update"].includes(action)) {
+    return jsonError(400, "uid and a valid action are required.");
   }
+  await assertManageable(uid);
 
   if (action === "update") {
     const displayName = payload.displayName?.trim();
-    if (!displayName) return NextResponse.json({ error: "Display name is required." }, { status: 400 });
+    if (!displayName || displayName.length > 60) return jsonError(400, "Display name is required (max 60 characters).");
 
     await Promise.all([
       adminAuth.updateUser(uid, { displayName }),
@@ -63,10 +77,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   return NextResponse.json({ success: true, isSuspended });
 }
 
-export async function DELETE(_request: NextRequest, { params }: Params) {
-  await requireAdmin();
+async function deleteHandler(_request: NextRequest, { params }: Params) {
   const { uid } = await params;
-  if (!uid) return NextResponse.json({ error: "uid is required." }, { status: 400 });
+  await assertManageable(uid);
 
   await Promise.allSettled([
     adminAuth.deleteUser(uid),
@@ -76,3 +89,6 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   revalidateTag(ADMIN_DASHBOARD_TAG, "max");
   return NextResponse.json({ success: true });
 }
+
+export const PATCH = adminHandler("admin-user", patchHandler);
+export const DELETE = adminHandler("admin-user", deleteHandler);

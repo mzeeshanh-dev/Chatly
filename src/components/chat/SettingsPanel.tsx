@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { authFetch, ensureOk } from "@/lib/api-client";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -151,8 +152,8 @@ const SettingsPanel = () => {
       fd.append("file", file);
       fd.append("id", user.uid);
       fd.append("type", "profile");
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
-      if (!res.ok) throw new Error("Upload failed");
+      const res = await authFetch(user, "/api/upload", { method: "POST", body: fd });
+      await ensureOk(res, "Upload failed");
       const { url, publicId } = await res.json();
       await updateUser(user.uid, { photoURL: url, photoPublicId: publicId });
     } finally {
@@ -175,13 +176,13 @@ const SettingsPanel = () => {
         ? [profile.photoPublicId]
         : [`Chatly/profiles/${user.uid}`, `chatly/profiles/${user.uid}`];
 
-      const res = await fetch("/api/upload/delete", {
+      const res = await authFetch(user, "/api/upload/delete", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ publicIds }),
       });
 
-      if (!res.ok) throw new Error("Remove failed");
+      await ensureOk(res, "Remove failed");
 
       await updateUser(user.uid, { photoURL: null, photoPublicId: null });
     } finally {

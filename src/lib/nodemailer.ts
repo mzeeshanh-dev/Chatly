@@ -1,20 +1,17 @@
 import nodemailer from "nodemailer";
+import { escapeHtml } from "@/lib/server/http";
 
 // ─── Transporter (singleton pattern) ─────────────────────────────────────────
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT),
-  secure: false, // STARTTLS on port 587
+  secure: Number(process.env.SMTP_PORT) === 465, // implicit TLS on 465, STARTTLS otherwise
+  requireTLS: Number(process.env.SMTP_PORT) !== 465,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
-
-// ─── OTP Generator ────────────────────────────────────────────────────────────
-export function generateOTP(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 // ─── Email Templates ──────────────────────────────────────────────────────────
 function buildOTPEmail(code: string, title: string, subtitle: string): string {
@@ -60,6 +57,12 @@ function buildNotificationEmail(title: string, subtitle: string, actionText: str
   `;
 }
 
+/** Strips control characters (header injection) and caps length. */
+function sanitizeName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 60) || "Someone";
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 export async function sendOTPEmail(to: string, code: string): Promise<void> {
   await transporter.sendMail({
@@ -81,13 +84,14 @@ export async function sendPasswordResetEmail(to: string, code: string): Promise<
 
 export async function sendRequestEmail(to: string, fromName: string): Promise<void> {
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/chat`;
+  fromName = sanitizeName(fromName);
   await transporter.sendMail({
     from: `"Chatly" <${process.env.SMTP_USER}>`,
     to,
     subject: `${fromName} sent you a message request`,
     html: buildNotificationEmail(
       "New Chat Request",
-      `${fromName} wants to start a conversation with you on Chatly.`,
+      `${escapeHtml(fromName)} wants to start a conversation with you on Chatly.`,
       "View Request",
       url
     ),
@@ -96,13 +100,14 @@ export async function sendRequestEmail(to: string, fromName: string): Promise<vo
 
 export async function sendRejectionEmail(to: string, fromName: string): Promise<void> {
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/chat`;
+  fromName = sanitizeName(fromName);
   await transporter.sendMail({
     from: `"Chatly" <${process.env.SMTP_USER}>`,
     to,
     subject: `Update on your message to ${fromName}`,
     html: buildNotificationEmail(
       "Message Request Declined",
-      `${fromName} has declined your connection request.`,
+      `${escapeHtml(fromName)} has declined your connection request.`,
       "Open Chatly",
       url
     ),

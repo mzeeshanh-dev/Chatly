@@ -11,13 +11,6 @@ import {
   TagChevron,
   Lock,
 } from "@phosphor-icons/react";
-import {
-  getAuth,
-  confirmPasswordReset,
-  sendPasswordResetEmail as firebaseSendReset,
-} from "firebase/auth";
-import { db } from "@/lib/firebase";
-import { doc, getDoc, deleteDoc, Timestamp } from "firebase/firestore";
 import clsx from "clsx";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
@@ -110,29 +103,13 @@ const ForgotPasswordPage = () => {
     }
   };
 
-  const handleVerifyCode = async (e: React.FormEvent) => {
+  // The code is verified server-side together with the new password, so the
+  // reset cannot be completed by skipping a client-side step.
+  const handleVerifyCode = (e: React.FormEvent) => {
     e.preventDefault();
     setAlert(null);
     if (otp.length < 6) return showAlert("Enter the full 6-digit code.");
-    setLoading(true);
-    try {
-      const otpRef = doc(db, "otps", `reset_${email}`);
-      const snap = await getDoc(otpRef);
-      if (!snap.exists()) throw new Error("No reset request found. Please try again.");
-      const data = snap.data();
-      const expiresAt = data.expiresAt as Timestamp;
-      if (Timestamp.now().toMillis() > expiresAt.toMillis()) {
-        await deleteDoc(otpRef);
-        throw new Error("Code expired. Please request a new one.");
-      }
-      if (data.code !== otp) throw new Error("Incorrect code.");
-      await deleteDoc(otpRef);
-      setStep(3);
-    } catch (err) {
-      showAlert(err instanceof Error ? err.message : "Verification failed.");
-    } finally {
-      setLoading(false);
-    }
+    setStep(3);
   };
 
   const handleNewPassword = async (e: React.FormEvent) => {
@@ -141,11 +118,19 @@ const ForgotPasswordPage = () => {
     if (newPassword.length < 8) return showAlert("Password must be at least 8 characters.");
     setLoading(true);
     try {
-      // Use Firebase's built-in password reset via email link as fallback
-      // Since we verified OTP ourselves, we use Admin-less approach: send Firebase reset link
-      await firebaseSendReset(getAuth(), email);
-      showAlert("A password reset link has been sent to your email. Check your inbox.", "success");
-      setTimeout(() => router.push("/login"), 3000);
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code: otp, newPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // A bad code means the user has to re-enter it.
+        if (res.status === 422) setStep(2);
+        throw new Error(data.error ?? "Failed to reset password.");
+      }
+      showAlert("Password updated. Redirecting to sign in...", "success");
+      setTimeout(() => router.push("/login"), 1500);
     } catch (err) {
       showAlert(err instanceof Error ? err.message : "Failed to reset password.");
     } finally {
@@ -169,7 +154,7 @@ const ForgotPasswordPage = () => {
             <span className="text-2xl font-semibold tracking-tight font-inter">Chatly</span>
           </Link>
           <h1 className="text-3xl font-semibold tracking-tight mb-2">Reset Password</h1>
-          <p className="text-muted-foreground text-sm">We'll help you back in securely.</p>
+          <p className="text-muted-foreground text-sm">We&apos;ll help you back in securely.</p>
         </div>
 
         <div className="bg-[#11131a]/80 backdrop-blur-xl border border-zinc-800/40 p-8 rounded-3xl shadow-2xl">

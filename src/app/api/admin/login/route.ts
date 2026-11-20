@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { asEmail, getClientIp, handleApiError, jsonError, readJson } from "@/lib/server/http";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
 import { ADMIN_COLLECTION, setAdminSessionCookie } from "@/lib/admin/auth";
 
 type FirebasePasswordResponse = {
@@ -11,14 +13,13 @@ type FirebasePasswordResponse = {
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, password } = (await request.json()) as {
-      email?: string;
-      password?: string;
-    };
+    const body = await readJson(request);
+    const email = asEmail(body.email);
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password || password.length > 128) return jsonError(400, "Email and password are required.");
 
-    if (!email || !password) {
-      return NextResponse.json({ error: "Email and password are required." }, { status: 400 });
-    }
+    await enforceRateLimit("admin-login-ip", getClientIp(request), { limit: 10, windowSeconds: 900 });
+    await enforceRateLimit("admin-login-email", email, { limit: 5, windowSeconds: 900 });
 
     const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
     if (!apiKey) {
@@ -52,7 +53,6 @@ export async function POST(request: NextRequest) {
     await setAdminSessionCookie(payload.idToken);
     return NextResponse.json({ success: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Admin login failed.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return handleApiError(error, "admin-login");
   }
 }

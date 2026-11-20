@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { authFetch, ensureOk } from "@/lib/api-client";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { MagnifyingGlass, X, Camera, Trash } from "@phosphor-icons/react";
@@ -21,14 +22,19 @@ import SharedMedia from "./SharedMedia";
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 
 interface GroupSettingsModalProps {
-  group: GroupDoc & { id?: string; groupId?: string };
+  group: Omit<GroupDoc, "memberIds" | "createdAt" | "description"> & {
+    description?: string;
+    memberIds?: string[];
+    id?: string;
+    groupId?: string;
+  };
   onClose: () => void;
 }
 
 const GroupSettingsModal = ({ group, onClose }: GroupSettingsModalProps) => {
   const { user } = useAuth();
   const [groupName, setGroupName] = useState(group.name);
-  const [description, setDescription] = useState(group.description);
+  const [description, setDescription] = useState(group.description ?? "");
   const [photoURL, setPhotoURL] = useState(group.photoURL);
   const [search, setSearch] = useState("");
   const [users, setUsers] = useState<FirestoreUser[]>([]);
@@ -70,8 +76,8 @@ const GroupSettingsModal = ({ group, onClose }: GroupSettingsModalProps) => {
       fd.append("file", file);
       fd.append("id", groupId);
       fd.append("type", "group");
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
-      if (!res.ok) throw new Error("Upload failed");
+      const res = await authFetch(user, "/api/upload", { method: "POST", body: fd });
+      await ensureOk(res, "Upload failed");
       const { url, publicId } = await res.json();
       await updateDoc(doc(db, COLLECTIONS.GROUPS, groupId), { photoURL: url, photoPublicId: publicId });
       setPhotoURL(url);
@@ -95,13 +101,13 @@ const GroupSettingsModal = ({ group, onClose }: GroupSettingsModalProps) => {
         ? [group.photoPublicId]
         : [`Chatly/groups/${groupId}`, `chatly/groups/${groupId}`];
 
-      const res = await fetch("/api/upload/delete", {
+      const res = await authFetch(user, "/api/upload/delete", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ publicIds }),
       });
 
-      if (!res.ok) throw new Error("Remove failed");
+      await ensureOk(res, "Remove failed");
 
       await updateDoc(doc(db, COLLECTIONS.GROUPS, groupId), { photoURL: null, photoPublicId: null });
       setPhotoURL(null);
@@ -242,7 +248,7 @@ const GroupSettingsModal = ({ group, onClose }: GroupSettingsModalProps) => {
                     <button onClick={() => {
                       setIsEditing(false);
                       setGroupName(group.name);
-                      setDescription(group.description);
+                      setDescription(group.description ?? "");
                     }} className="px-4 py-1.5 bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 rounded-lg text-xs font-semibold shadow-sm transition-colors">
                       Cancel
                     </button>

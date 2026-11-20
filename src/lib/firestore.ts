@@ -53,6 +53,8 @@ export interface ChatDoc {
   createdAt: unknown;
   lastMessage?: string;
   lastMessageAt?: unknown;
+  unreadCount?: Record<string, number>;
+  lastRead?: Record<string, unknown>;
 }
 
 export interface GroupDoc {
@@ -66,6 +68,8 @@ export interface GroupDoc {
   createdAt: unknown;
   lastMessage?: string;
   lastMessageAt?: unknown;
+  unreadCount?: Record<string, number>;
+  lastRead?: Record<string, unknown>;
 }
 
 export interface MessageMediaMeta {

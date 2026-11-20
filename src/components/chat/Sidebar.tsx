@@ -144,6 +144,7 @@ const Sidebar = ({ activeView, onViewChange }: SidebarProps) => {
         {/* Logout */}
         <motion.button
           onClick={logout}
+          aria-label="Sign out"
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           className="w-full px-3 py-3 rounded-xl flex items-center gap-4 text-zinc-600 hover:text-red-400 hover:bg-red-500/5 transition-all"

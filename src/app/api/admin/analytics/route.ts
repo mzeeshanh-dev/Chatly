@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { revalidateTag, unstable_cache } from "next/cache";
-import { requireAdmin } from "@/lib/admin/auth";
+import { adminHandler } from "@/lib/admin/auth";
 import { ADMIN_ANALYTICS_TAG, ADMIN_DASHBOARD_REVALIDATE_SECONDS } from "@/lib/admin/cache";
 import { adminDb } from "@/lib/firebase-admin";
 
@@ -292,15 +292,16 @@ const getCachedAnalyticsDashboard = unstable_cache(
   { revalidate: ADMIN_DASHBOARD_REVALIDATE_SECONDS, tags: [ADMIN_ANALYTICS_TAG] }
 );
 
-export async function GET() {
-  await requireAdmin();
+async function getHandler() {
   const [analytics, syncStatus] = await Promise.all([getCachedAnalyticsDashboard(), getSyncStatus()]);
   return NextResponse.json({ ...analytics, syncStatus });
 }
 
-export async function PUT() {
-  await requireAdmin();
+async function putHandler() {
   const syncStatus = await syncLatestAnalytics();
   revalidateTag(ADMIN_ANALYTICS_TAG, "max");
   return NextResponse.json({ success: syncStatus.reason !== "sync-error", syncStatus });
 }
+
+export const GET = adminHandler("admin-analytics", getHandler);
+export const PUT = adminHandler("admin-analytics", putHandler);

@@ -2,7 +2,6 @@
 
 import React, { useState, useRef, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowRight,
@@ -15,7 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import Cookies from "js-cookie";
+import { createServerSession } from "@/lib/session";
 import clsx from "clsx";
 
 // ─── Spring config ─────────────────────────────────────────────────────────────
@@ -82,7 +81,6 @@ function OTPInputs({ onChange }: { onChange: (val: string) => void }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 const RegisterPage = () => {
-  const router = useRouter();
   const [step, setStep] = useState<1 | 2>(1);
   const [form, setForm] = useState({ displayName: "", email: "", password: "" });
   const [otp, setOtp] = useState("");
@@ -136,10 +134,10 @@ const RegisterPage = () => {
 
       // Account created successfully -> Sign in, set session cookie, then trigger redirect
       const credential = await signInWithEmailAndPassword(auth, form.email, form.password);
-      const token = await credential.user.getIdToken();
-      Cookies.set("chatly_session", token, { expires: 7, sameSite: "lax" });
+      await createServerSession(await credential.user.getIdToken());
 
-      router.push("/chat");
+      // Hard navigation so the router cache cannot replay the earlier signed-out redirect.
+      window.location.replace("/chat");
     } catch (err) {
       showAlert(err instanceof Error ? err.message : "Verification failed.");
     } finally {

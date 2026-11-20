@@ -1,258 +1,146 @@
-# Live Preview
-<img width="480" height="270" alt="output" src="https://github.com/user-attachments/assets/ce3fba55-3fb4-4550-b3f0-d3cc90520dbd" />
+# Chatly
 
+Real-time messaging built on Next.js and Firebase, deployed serverless on Vercel.
+Direct chats with a message-request handshake, groups, media and voice notes, message tagging (questions, tasks, decisions), push notifications, and an admin portal.
 
+**Live:** https://chatly-stream.vercel.app/
 
-# 💬 Chatly — Serverless Real-Time Messaging Platform
+<img width="480" height="270" alt="Chatly preview" src="https://github.com/user-attachments/assets/ce3fba55-3fb4-4550-b3f0-d3cc90520dbd" />
 
-**Chatly** is a high-performance, serverless real-time messaging application designed with a robust dual-layer permission system, hierarchical group structures, and reactive state management. Built explicitly using **Next.js (App Router)** and **TypeScript** as a **Full-Stack Application**, the architecture leverages native edge environments and client-directed synchronization loops to provide an ultra-responsive, WhatsApp-like desktop and mobile ecosystem.
+## Features
 
----
+- **Messaging:** one-to-one chats and groups, typing indicators, read state, presence, forwarding, selective delete (for me / for everyone), 3-minute edit window.
+- **Request handshake:** the first message to a stranger becomes a request the recipient must accept or decline.
+- **Media:** images, files (10 MB cap) and voice notes via Cloudinary.
+- **Message tagging:** mark a message as a Question, Task (with assignees) or Decision, with a tracked-items panel and an unread digest banner.
+- **Push notifications:** Firebase Cloud Messaging, honouring per-user opt-out.
+- **Accounts:** email OTP registration, OTP password reset, public guest demo accounts on `/login`.
+- **Admin portal:** user management and Vercel Analytics overview at `/admin`.
+- **Light and dark themes**, responsive layout with a mobile tab bar.
 
-## ✨ Core Features
+## Architecture
 
-### 🗣️ Individual & Group Chatting
-*   **One-on-One Messaging:** Enjoy seamless, real-time individual chats with read receipts and active typing indicators.
-*   **Hierarchical Group Streams:** Create and manage groups with granular authorization. Out-of-the-box structural authority maps out Group Creators/Admins from generalized members. Admins retain strict functional privileges to add, prune, or re-route user identities.
-*   **Sovereign Exits & System Logs:** Members can independently leave groups at any time. Native mutations (e.g., additions, deliberate exits) are compiled as isolated systemic events and rendered as unique mid-stream timeline logs.
-*   **Local Conversation Clearing:** Users can clear a conversation only for themselves. The other participant or group members keep their own chat history intact.
-*   **Selective Message Deletion:** Users can select messages and delete them for themselves, or delete their own sent messages for everyone. Chatly removes deleted-for-everyone messages completely instead of leaving a placeholder.
-*   **Message Forwarding:** Selected messages can be forwarded into direct chats or groups, with forwarded messages clearly labeled in the conversation.
-*   **Short-Window Message Editing:** Sent messages can be edited by the sender within a strict 3-minute window, with edited messages marked in the UI.
+```
+Browser (Next.js client)
+  |-- Firebase Auth ------------------------> identity
+  |-- Firestore (real-time listeners) ------> chats, groups, messages, profiles
+  |-- /api/* (Vercel serverless functions)
+        |-- firebase-admin ------------------> verify tokens, privileged reads/writes
+        |-- Cloudinary ----------------------> avatar and chat-media uploads
+        |-- SMTP (nodemailer) ---------------> OTP and request emails
+        |-- FCM -----------------------------> push notifications
+```
 
-### 🔔 Push Notifications via Firebase FCM
-*   **Real-Time Alerts:** Stay connected with instant push notifications powered by Firebase Cloud Messaging (FCM).
-*   **Background Sync:** Receive reliable updates for new messages, group invites, and system events even when the app is minimized or running in the background.
+Chat traffic does not pass through the serverless layer: messages are written to and streamed from Firestore directly by the client, so there is no server-side connection or in-memory state to lose between invocations. API routes exist only for operations that need a privileged credential (uploads, email, push, admin, OTP, session).
 
-### 🎨 Chat UI Customization & Theming
-*   **Dynamic Theme Synchronization:** Zero-flicker Automated Theme Switcher Engine configured directly via hardware tokens and user preference.
-*   **Solar Light Profile:** Formulated for high-glare environments using strict slate tones (`#f8fafc`) and crisp, clean typography.
-*   **Deep Tech Dark Profile:** Mapped out on custom gray-to-black gradient palettes (`#0B0F19`) utilizing high-contrast accents to ensure minimal ocular fatigue.
-*   **Personalized Workspaces:** Tailor your chat interface to your liking for a truly custom messaging experience.
+### Authentication flow
 
-### 👤 Profile & Contact Management
-*   **Profile Picture Setting:** Upload and manage your custom avatar through Cloudinary with deterministic per-user asset replacement.
-*   **Clean Avatar Lifecycle:** Each user keeps one canonical Cloudinary profile image at `Chatly/profiles/{uid}`. Re-uploading a profile picture overwrites the same asset instead of creating a new random file every time.
-*   **Contact & Personal Information:** Maintain and update your display bio, status presets, and personal details while strict analytical core identifiers (usernames, system emails) remain protected.
-*   **Network Presence Indicators:** Continuous lifecycle tracking pipelines broadcasting automated granular *Last Seen* timestamp snapshots based on active network connection heartbeats.
+1. The client signs in with Firebase Auth (email and password).
+2. It posts the ID token to `POST /api/auth/session`, which verifies it, rejects suspended users and sets an **httpOnly, SameSite=Lax, Secure** session cookie (`chatly_session`, 5 days).
+3. `middleware.ts` uses that cookie as a route guard: anonymous requests to `/chat` redirect to `/login?from=/chat`.
+4. After login, the page performs a **full navigation** to the validated `from` target. A soft `router.push` can replay the Next.js router-cache entry of the earlier signed-out `/chat -> /login` redirect, which was the cause of the "stuck on login page" bug.
+5. `from` is validated by `getSafeRedirectPath` (same-origin, allow-listed `/chat` paths only; no external URLs, `//host`, backslashes or control characters).
+6. If the cookie exists but Firebase has no user (expired or revoked), `/chat` clears the cookie and returns to `/login`.
 
-### 🔒 Privacy & Security (Zero-Trust Identity)
-*   **Inbound Connection Gateway:** To eliminate messaging overflow and unsolicited spamming, users cannot directly dump messages into an unknown recipient's workspace.
-*   **The Handshake Protocol:** The initial transmission triggers a connection request state. The recipient conditionally blocks input capabilities, replacing them with `[Accept]` or `[Decline]`.
-*   **OTP Verification Loops:** Dynamic security state dispatches a secure, server-side transactional One-Time Password (OTP) via email before granting main dashboard access.
+The cookie is a coarse guard. Real authorization happens in each API route (Bearer ID token verified with `verifyIdToken(token, true)`, which also checks revocation) and in Firestore security rules.
 
----
+### Registration and password reset
 
-## 📱 Now also serving the Android app
+OTP handling is entirely server-side (`src/lib/server/otp.ts`): codes come from `crypto.randomInt`, only a salted SHA-256 hash is stored, codes expire after 10 minutes, allow 5 attempts and are single use. The Firebase account is created **disabled** and enabled only after the code is verified. Password reset verifies the code and updates the password in one server call, then revokes existing sessions. The forgot-password endpoint responds identically whether or not the account exists.
 
-The Chatly Android app (React Native, separate repo) shares this Firebase project and now also calls **this app's own API routes** (`/api/upload/chat-media`, `/api/notify`, `/api/notify/rejection`, `/api/notify/request`) for anything that needs a privileged credential — media upload, push notifications, transactional email. That's a deliberate choice: the Android app's backend was going to be Firebase Cloud Functions, but that requires Firebase's paid Blaze plan, so it reuses this already-deployed, already-free Vercel backend instead. All four routes now require a valid `Authorization: Bearer <Firebase ID token>` header (previously `/api/notify*` had no auth check at all — tightened as part of this change, since it's no longer only ever called from within this app's own trusted client).
+## Security measures
 
-### 🆕 Expanded Shared Features (Cross-Platform)
-New capabilities shared across the Web and Android apps include:
-*   **Media & Attachments:** Seamlessly send images, documents, and files up to 10MB powered by Cloudinary.
-*   **Voice Messages:** WhatsApp-style native audio recording with an interactive waveform/scrubber UI for quick communication.
-*   **Message Tagging (Action Items):** Select and tag any message as an open **Question**, a **Task** (with assignees), or a **Decision**. All tracked items are easily accessible in a dedicated group/chat panel.
-*   **Personal Follow-ups:** Set private reminders on specific messages so you never forget to reply or take action.
-*   **Live Presence Dots:** Direct message avatars feature dynamic colored dots — green for connected and online, yellow for pending requests, and red for blocked users.
+| Area | Implementation |
+| --- | --- |
+| AuthN/AuthZ | Bearer ID token on every non-public API route; conversation membership checked before notify and media upload; avatar upload and delete restricted to the owner (or group admin) with a strict public-id allow-list |
+| Open redirect | `from` parameter allow-listed and normalised (`src/lib/safe-redirect.ts`, unit tested) |
+| Sessions | httpOnly Secure cookie issued by the server; admin sessions are 8-hour session cookies verified with `verifySessionCookie` and `SameSite=Strict` |
+| Abuse | Firestore-backed fixed-window rate limits (shared across serverless instances) on registration, OTP, reset, admin login, uploads and email/push |
+| Email relay | Request and rejection emails only go to people the caller already has a DM with; sender name is read server-side; user-supplied names are HTML-escaped and stripped of control characters |
+| Input handling | Central validators, JSON body size limits, upload size and MIME checks, sanitised Cloudinary file extensions |
+| Headers | CSP, HSTS, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, `no-store` on API and authenticated pages |
+| Errors | `handleApiError` returns generic messages for unexpected failures and logs details server-side |
+| Admin | API routes return 401/403 (no redirects), admin accounts cannot be suspended or deleted via the API, device push tokens are never sent to the admin UI |
+| Indexing | `/chat`, `/admin` and auth pages are `noindex` and disallowed in `robots.txt` |
 
----
+### Known limitations
 
-## 💻 Comprehensive Tech Stack
+- **Firestore security rules are not versioned in this repository.** Because the client talks to Firestore directly, rules are the main data-isolation control. Review them in the Firebase console; the `otps` and `rateLimits` collections should deny all client access (the admin SDK bypasses rules).
+- **Guest accounts are shared**: anyone using a demo account sees the same data. They exist for evaluation only.
+- Rate limiting fails open if Firestore is unavailable. Add a Firestore TTL policy on `rateLimits.expiresAt` to clean up old windows.
+- The middleware only checks that a session cookie exists; it does not cryptographically verify it at the edge.
 
-Built entirely as a modern **Full-Stack Application**, handling both the rich client interface and secure backend APIs within a single unified repository.
+## Project structure
 
-### Framework & Core
-*   **Next.js 16:** Utilizing the latest App Router architecture for seamless routing, server-side rendering, and backend API handlers.
-*   **React 19:** Leveraging the latest React features and concurrent rendering capabilities.
-*   **TypeScript:** Enforcing strict type safety, custom schemas, and self-documenting code.
+```
+src/
+  app/                 routes: landing, auth pages, /chat, /admin, /api/*
+  components/
+    auth/              GuestAccounts, AuthAlert
+    chat/              ChatWindow, ChatList, MessageItem, modals/ (edit, forward, clear)
+    admin/  landing/  ui/
+  context/AuthContext  Firebase auth state, presence, server session sync
+  hooks/               useVoiceRecorder
+  lib/
+    server/            http (validation, errors), auth, rate-limit, otp, uploads, email-guard
+    api-client.ts      authFetch for Bearer-authenticated calls
+    safe-redirect.ts  session.ts  firebase*.ts  cloudinary.ts  nodemailer.ts
+  middleware.ts        route guard
+tests/                 vitest unit tests
+```
 
-### Backend, Database & Cloud
-*   **Firebase Firestore:** Scalable NoSQL database with realtime listeners for instant chat synchronization.
-*   **Firebase Cloud Messaging (FCM) & Firebase Admin:** Robust infrastructure to deliver real-time push notifications across all platforms.
-*   **Service Workers:** Implemented for reliable background synchronization and push notification delivery even when the app is minimized or closed.
-*   **Cloudinary:** High-performance cloud storage and CDN optimization for profile pictures and media uploads, organized under a dedicated `Chatly` folder.
-*   **Nodemailer:** Reliable SMTP integrations to send automated OTP emails for Zero-Trust user authentication.
+## Testing
 
-### Styling, UI & Animations
-*   **Tailwind CSS (v4):** Utility-first styling framework driving the application's responsive, dual-theme (Light/Dark) design system.
-*   **Framer Motion:** Powering fluid micro-animations, page transitions, and interactive chat interface elements.
-*   **Lucide React & Phosphor Icons:** Clean, consistent, and scalable SVG iconography for all UI components.
-*   **Sonner:** Highly customizable toast notifications for beautiful, unobtrusive user feedback.
+```bash
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint
+npm test            # vitest: redirect validation, validators, upload id parsing, route guard
+npm run build
+```
 
-### Infrastructure & Operations
-*   **Vercel Analytics:** Native edge tracking to monitor user experience, performance, and visitor metrics.
-*   **Vercel Edge Network:** Serverless deployment pipeline ensuring low-latency asset delivery and API execution worldwide.
+CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests and build on every push and pull request.
 
-### Admin Portal & Operations
-*   **Admin Authentication:** `/admin/login` signs in through Firebase Auth and only allows accounts with the `admin` custom claim or an active Firestore `admins/{uid}` document.
-*   **Protected Admin Routes:** Middleware protects `/admin/*` routes with the `chatly_admin_session` cookie and redirects non-admin visitors back to the admin login page.
-*   **User Management:** Admins can search users, view core account columns, suspend/reactivate Firebase Auth accounts, and delete user profiles from Firestore.
-*   **Suspension Enforcement:** Suspended users are disabled in Firebase Auth, marked with `isSuspended` in Firestore, forced offline, and automatically signed out from the client session.
-*   **Vercel Analytics Cache:** The admin dashboard syncs Vercel analytics into Firestore daily documents under `adminAnalyticsDaily` and stores sync metadata in `adminAnalyticsMeta`.
-*   **ISR/Cache Revalidation:** Admin analytics reads use `unstable_cache` with cache tags and revalidate after sync so dashboard visits can load cached aggregates instead of repeatedly reading every source document.
+Automated tests cover pure logic and the middleware. API authorization was additionally verified manually against a running production build (unauthenticated requests rejected, cross-user avatar overwrite and delete rejected, non-member notify rejected, arbitrary email relay rejected). There is no automated browser end-to-end suite yet.
 
-### Admin Analytics Performance Notes
-*   **Cached Source of Truth:** The dashboard renders from Firestore cache instead of calling Vercel Analytics on every admin visit.
-*   **Manual Sync Only:** Vercel REST calls run only when an admin presses `Sync Data`; regular dashboard loads read cached aggregate JSON.
-*   **Tag Revalidation:** Sync invalidates the analytics cache tag immediately after new rows are saved, so the next dashboard read gets fresh data without waiting for the default cache window.
-*   **Range Bucketing:** The client memoizes chart ranges. Weekly and monthly views fill missing days with zero-value buckets; 3-month, yearly, and all-time views aggregate daily documents into monthly buckets for fewer chart points.
-*   **Low Client Work:** Chart path generation, axis labels, and range buckets are memoized so changing filters only recomputes the active graph data.
+## Environment variables
 
-### Admin Analytics Environment
-The analytics sync endpoint reads all private Vercel values from environment variables:
+Copy `.env.example` values into `.env` locally and into the Vercel project settings. Never commit real values.
 
-```text
+```
+NEXT_PUBLIC_APP_URL=
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+NEXT_PUBLIC_FIREBASE_APP_ID=
+NEXT_PUBLIC_FIREBASE_VAPID_KEY=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USER=
+SMTP_PASS=
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
+# Admin analytics (optional)
 VERCEL_API_TOKEN=
-VERCEL_ACCESS_TOKEN=
 VERCEL_PROJECT_ID=
 VERCEL_TEAM_ID=
-VERCEL_TEAM_SLUG=
-VERCEL_ANALYTICS_API_URL=
-VERCEL_ANALYTICS_LIMIT=100
-ADMIN_ANALYTICS_SYNC_DAYS=30
-ADMIN_ANALYTICS_SYNC_CONCURRENCY=3
 ```
 
-Private server credentials must remain in `.env` / deployment environment settings only. Firebase client values that use `NEXT_PUBLIC_*` are public browser configuration, while Firebase Admin private key, SMTP credentials, Cloudinary secret, and Vercel tokens must not be hard-coded in source.
+## Local development
 
-### Wishlist / Planned Moderation Features
-*   **Report User:** Users will be able to report another account with a complaint message and selected conversation/message context.
-*   **Admin Review Queue:** Reports should appear in the admin portal with reporter, reported user, complaint text, selected conversation excerpts, timestamps, and moderation status.
-*   **Admin Enforcement:** From a report, admins should be able to suspend/reactivate the reported account using the existing admin suspension flow.
-*   **Email Notification to Admin:** New reports should notify configured admin email recipients through the existing SMTP/Nodemailer infrastructure.
-*   **Push Notification to Admin:** New reports should also send Firebase Cloud Messaging notifications to registered admin devices.
-*   **Audit Trail:** Report actions should be stored in Firestore so future moderation decisions can be reviewed.
-
-
----
-
-## 🚀 Granular Message States & Real-Time Sync
-
-*   **Dual-Tick Lifecycle Receipts:** Native document observers dynamically tracking and mutating data states across client instances:
-    *   `[✓ Gray]` — Sent: Payload committed successfully onto the remote database clusters.
-    *   `[✓✓ Gray]` — Delivered: Payload verified inside the specific platform architecture pipelines.
-    *   `[✓✓ Green]` — Read: Reactive observer confirms the exact target user workspace view actively mounted the document into sight.
-*   **Contextual Messaging Retries:** Deeply nested reactive data schemas fully supporting inline replies, multi-tier threads, and nested quotes pointing back to parent string IDs.
-*   **Optimized Reactive Typing Subsystem:** Utilizing synchronized temporary presence maps in combination with aggressive debouncing algorithms to render live client typing signals (*"User is typing..."*) under minimal read-amplification overhead.
-*   **Per-User Visibility Controls:** `deletedFor` tracks which users have locally removed a message, keeping delete-for-me behavior private to that user.
-*   **Forward/Edit Metadata:** Forwarded and edited messages carry lightweight metadata (`forwarded`, `edited`, `editedAt`) so the UI can show the correct state without duplicating message models.
-
----
-
-## Firestore Message Permissions
-
-Chatly's message actions require Firestore rules that separate local visibility changes from global destructive changes:
-
-*   **Delete for me / clear conversation:** Allowed through a narrow message update that only appends the current user's UID to `deletedFor`.
-*   **Delete for everyone:** Allowed only when the authenticated user is the original `senderId` of the message.
-*   **Edit message:** Allowed only for the original sender, only on text messages, and only within 3 minutes of the original `timestamp`.
-*   **Forward message:** Uses normal message creation rules because the forwarded copy is a new message from the current user with `forwarded: true`.
-
-If Firestore throws `Missing or insufficient permissions` while deleting, clearing, or editing messages, the deployed rules are usually missing one of these message update/delete permissions.
-
-Recommended helper rules:
-
-```js
-function deletedForSelfOnly() {
-  return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedFor'])
-    && request.resource.data.deletedFor is list
-    && request.auth.uid in request.resource.data.deletedFor
-    && (
-      !('deletedFor' in resource.data)
-        ? request.resource.data.deletedFor.hasOnly([request.auth.uid])
-        : request.resource.data.deletedFor.hasAll(resource.data.deletedFor)
-          && request.resource.data.deletedFor.size() <= resource.data.deletedFor.size() + 1
-    );
-}
-
-function messageEditBySenderWithinWindow() {
-  return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'edited', 'editedAt'])
-    && resource.data.senderId == request.auth.uid
-    && resource.data.type == "text"
-    && request.resource.data.text is string
-    && request.resource.data.text.size() > 0
-    && request.resource.data.edited == true
-    && request.resource.data.editedAt == request.time
-    && request.time <= resource.data.timestamp + duration.value(3, "m");
-}
+```bash
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Private chat messages should allow:
+## Deployment
 
-```js
-allow update: if isChatParticipant(chatId)
-  && (deletedForSelfOnly() || messageEditBySenderWithinWindow());
+Deploy to Vercel with the variables above. Admin users are Firebase users with a `role: "admin"` document in the `admins` collection (or the `admin` custom claim).
 
-allow delete: if isChatParticipant(chatId)
-  && resource.data.senderId == request.auth.uid;
-```
+## Android app
 
-Group messages should allow:
-
-```js
-allow update: if isGroupMemberParent(groupId)
-  && (deletedForSelfOnly() || messageEditBySenderWithinWindow());
-
-allow delete: if isGroupMemberParent(groupId)
-  && resource.data.senderId == request.auth.uid;
-```
-
----
-
-## Cloudinary Asset Lifecycle
-
-Chatly uses a controlled Cloudinary upload strategy for profile and group images instead of allowing every upload to create a random, permanent asset.
-
-### Dedicated Folder Structure
-
-```text
-Chatly/
-├── profiles/
-│   └── {user.uid}
-└── groups/
-    └── {groupId}
-```
-
-### Why This Matters
-
-*   **One user, one active profile image:** A user profile image is uploaded with the stable public ID `Chatly/profiles/{uid}`.
-*   **Replacement instead of clutter:** When the same user uploads a new profile image, Cloudinary overwrites the existing asset instead of creating a heap of unused files.
-*   **Cleaner storage:** The Cloudinary media library stays organized by application domain (`Chatly`) and asset type (`profiles`, `groups`).
-*   **Predictable references:** Firestore stores the active `photoURL` and `photoPublicId`, so the app always points to the current image for that user.
-*   **CDN refresh support:** Uploads use Cloudinary invalidation so replaced images can refresh cleanly across cached delivery URLs.
-
-This follows the same general asset-lifecycle pattern used in large-scale product engineering, including companies in the Netflix/Meta/Google class: deterministic object keys for user-owned assets, overwrite mutable resources in place, and avoid unbounded storage growth from repeated profile updates. The exact internal implementation differs by company, but the principle is the same: stable IDs, predictable ownership, and storage hygiene.
-
----
-
-## 📂 System Directory Mapping
-
-```text
-src/
-├── app/                           # Core App Router Structural Layouts
-│   ├── api/                       # Next.js Full-Stack Backend API Routes
-│   │   ├── auth/                  # Authentication & OTP Routes
-│   │   ├── notify/                # Firebase FCM Push Notification Handlers
-│   │   └── upload/                # Profile Picture Upload Handlers (Cloudinary)
-│   ├── layout.tsx                 # Global HTML & Body System Wrappers
-│   ├── chat/
-│   │   └── page.tsx               # Main Independent High-End Chat Dashboard Workspace
-│   └── (landing)/                 # Route Grouping: Injects shared Header & Footer pipelines
-│       ├── layout.tsx             # Shared Structure for public marketing pages
-│       ├── page.tsx               # High-Conversion Corporate Landing View
-│       ├── login/
-│       │   └── page.tsx           # Authentication Entry Gateway
-│       └── register/
-│           └── page.tsx           # Signup Interface + Translucent OTP UI Overlay
-│
-├── components/                    # Atomic Component Architecture
-│   ├── landing/                   # Modular Marketing UI Subsections
-│   ├── chat/                      # Chat Interface & Messaging Components
-│   ├── auth/                      # Authentication & Security Components
-│   └── ui/                        # Reusable Control Nodes & Primitive System Units
-│
-├── lib/                           # Core Utilities, Firebase Config, & Services
-├── context/                       # Global State Management & Providers
-└── styles/
-    └── globals.css                # Base Tailwind layer with auto-detect hardware color tokens
-```
+The separate React Native app shares this Firebase project and calls `/api/upload/chat-media`, `/api/notify`, `/api/notify/request` and `/api/notify/rejection` with a Bearer ID token. `/api/notify` now requires `chatId` and `collectionName` and verifies that sender and recipient both belong to that conversation; the request and rejection emails read the sender name server-side.

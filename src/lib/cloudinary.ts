@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { v2 as cloudinary } from "cloudinary";
 
 // ─── Configuration (server-only — never expose in CLIENT bundle) ──────────────
@@ -76,12 +77,14 @@ export async function uploadChatMedia(fileBuffer: Buffer, chatId: string, mediaT
   return new Promise((resolve, reject) => {
     let ext = "";
     if (fileName && fileName.includes(".")) {
-      ext = fileName.split(".").pop() || "";
+      // Keep only a short alphanumeric extension; the file name is user-controlled.
+      const candidate = fileName.split(".").pop() || "";
+      ext = /^[A-Za-z0-9]{1,8}$/.test(candidate) ? candidate.toLowerCase() : "";
     }
     
     // Cloudinary uses the public_id for the final URL. If we append the extension here,
     // the resulting secure_url will have the correct format, fixing "unknown format" bugs on download.
-    const uniqueId = require("crypto").randomUUID().replace(/-/g, "");
+    const uniqueId = randomUUID().replace(/-/g, "");
     const customPublicId = ext ? `${uniqueId}.${ext}` : uniqueId;
 
     const uploadStream = cloudinary.uploader.upload_stream(

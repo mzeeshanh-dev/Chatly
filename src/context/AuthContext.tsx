@@ -22,7 +22,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { COLLECTIONS, type FirestoreUser } from "@/lib/firestore";
-import Cookies from "js-cookie";
+import { clearServerSession, createServerSession } from "@/lib/session";
 import { requestFCMToken, setupForegroundMessaging } from "@/lib/fcm";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -49,17 +49,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(firebaseUser);
 
       if (firebaseUser) {
-        // Persist session token for middleware route guard
-        const token = await firebaseUser.getIdToken();
-        Cookies.set("chatly_session", token, { expires: 7, sameSite: "lax" });
-        
+        // Exchange the ID token for an httpOnly server session cookie (route guard).
+        try {
+          await createServerSession(await firebaseUser.getIdToken());
+        } catch (error) {
+          console.error("Session sync failed:", error);
+        }
+
         // Always request FCM token on login — requestFCMToken handles permission internally
         if (typeof window !== "undefined" && "Notification" in window && Notification.permission !== "denied") {
           requestFCMToken(firebaseUser.uid);
         }
         setupForegroundMessaging();
       } else {
-        Cookies.remove("chatly_session");
+        void clearServerSession();
         setProfile(null);
         setLoading(false);
       }
@@ -76,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribeProfile = onSnapshot(profileRef, (snap) => {
       const nextProfile = snap.exists() ? (snap.data() as FirestoreUser) : null;
       if (nextProfile?.isSuspended) {
-        Cookies.remove("chatly_session");
+        void clearServerSession();
         signOut(auth).finally(() => {
           window.location.href = "/login";
         });
@@ -146,13 +149,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await signInWithEmailAndPassword(auth, email, password);
-    const token = await result.user.getIdToken();
-    Cookies.set("chatly_session", token, { expires: 7, sameSite: "lax" });
+    // The cookie must exist before any navigation, otherwise the route guard
+    // bounces the user straight back to /login.
+    try {
+      await createServerSession(await result.user.getIdToken());
+    } catch (error) {
+      await signOut(auth);
+      throw error;
+    }
   }, []);
 
   const logout = useCallback(async () => {
+    await clearServerSession();
     await signOut(auth);
-    Cookies.remove("chatly_session");
     window.location.href = "/login";
   }, []);
 

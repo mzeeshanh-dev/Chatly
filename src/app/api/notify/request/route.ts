@@ -1,31 +1,25 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { sendRequestEmail } from "@/lib/nodemailer";
-import { adminAuth } from "@/lib/firebase-admin";
+import { asEmail, handleApiError, readJson } from "@/lib/server/http";
+import { requireUser } from "@/lib/server/auth";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
+import { resolveEmailRecipient } from "@/lib/server/email-guard";
 
-// Called by both web and mobile (mobile has no Cloud Functions backend of
-// its own) — needs real auth since it's an arbitrary-recipient email relay.
+// Shared by web and mobile (mobile has no Cloud Functions backend), so it
+// authenticates with a Bearer ID token and only emails existing conversation
+// partners.
 export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization");
-    const idToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!idToken) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
-    try {
-      await adminAuth.verifyIdToken(idToken);
-    } catch {
-      return NextResponse.json({ error: "Invalid session." }, { status: 401 });
-    }
+    const caller = await requireUser(req);
+    await enforceRateLimit("notify-email", caller.uid, { limit: 20, windowSeconds: 3600 });
 
-    const { toEmail, fromName } = await req.json();
-
-    if (!toEmail || !fromName) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-    }
+    const body = await readJson(req);
+    const toEmail = asEmail(body.toEmail);
+    const { fromName } = await resolveEmailRecipient(caller.uid, toEmail);
 
     await sendRequestEmail(toEmail, fromName);
-
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("Notify request error:", error);
-    return NextResponse.json({ error: "Failed to send notification" }, { status: 500 });
+    return handleApiError(error, "notify-request");
   }
 }

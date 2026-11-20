@@ -1,32 +1,34 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/firebase";
-import { doc, setDoc, Timestamp } from "firebase/firestore";
-import { generateOTP, sendPasswordResetEmail } from "@/lib/nodemailer";
+import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { sendPasswordResetEmail } from "@/lib/nodemailer";
+import { asEmail, getClientIp, handleApiError, readJson } from "@/lib/server/http";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
+import { generateOtp, storeOtp } from "@/lib/server/otp";
 
 export async function POST(request: NextRequest) {
   try {
-    const { email } = await request.json();
+    const body = await readJson(request);
+    const email = asEmail(body.email);
 
-    if (!email) {
-      return NextResponse.json({ error: "email is required." }, { status: 400 });
+    await enforceRateLimit("forgot-ip", getClientIp(request), { limit: 10, windowSeconds: 3600 });
+    await enforceRateLimit("forgot-email", email, { limit: 3, windowSeconds: 3600 });
+
+    // The response is identical whether or not the account exists, so this
+    // endpoint cannot be used to enumerate registered emails.
+    try {
+      const user = await adminAuth.getUserByEmail(email);
+      const profile = await adminDb.collection("users").doc(user.uid).get();
+      if (!user.disabled && profile.exists && profile.data()?.isActivated) {
+        const code = generateOtp();
+        await storeOtp("reset", email, code, { uid: user.uid });
+        await sendPasswordResetEmail(email, code);
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code !== "auth/user-not-found") throw error;
     }
 
-    const code = generateOTP();
-    const expiresAt = Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000));
-
-    // Reuse the otps collection — keyed by email with a "reset" type flag
-    await setDoc(doc(db, "otps", `reset_${email}`), {
-      code,
-      email,
-      expiresAt,
-      type: "password_reset",
-    });
-
-    await sendPasswordResetEmail(email, code);
-
     return NextResponse.json({ success: true });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Internal server error";
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (error) {
+    return handleApiError(error, "forgot-otp");
   }
 }

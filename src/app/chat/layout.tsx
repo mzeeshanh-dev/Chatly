@@ -1,6 +1,12 @@
 import { AuthProvider } from "@/context/AuthContext";
 import { QueryProvider } from "@/components/ui/QueryProvider";
 import { Toaster } from "sonner";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Messages",
+  robots: { index: false, follow: false },
+};
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   return (

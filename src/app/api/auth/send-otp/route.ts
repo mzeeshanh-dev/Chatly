@@ -1,52 +1,55 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { generateOTP, sendOTPEmail } from "@/lib/nodemailer";
+import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { sendOTPEmail } from "@/lib/nodemailer";
 import {
-  getFirestore,
-  doc,
-  setDoc,
-  Timestamp,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import { createUserWithEmailAndPassword, getAuth } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+  ApiError,
+  asEmail,
+  asString,
+  getClientIp,
+  handleApiError,
+  readJson,
+} from "@/lib/server/http";
+import { enforceRateLimit } from "@/lib/server/rate-limit";
+import { generateOtp, storeOtp } from "@/lib/server/otp";
 
+/**
+ * Step 1 of registration. The Firebase Auth account is created *disabled* and
+ * only enabled once the emailed code is verified, so nobody can sign in with an
+ * unverified address.
+ */
 export async function POST(request: NextRequest) {
   try {
-    const { email, displayName, password } = await request.json();
+    const body = await readJson(request);
+    const email = asEmail(body.email);
+    const displayName = asString(body.displayName, "Name", { min: 2, max: 60 });
+    const password = asString(body.password, "Password", { min: 8, max: 128 });
 
-    if (!email || !displayName || !password) {
-      return NextResponse.json(
-        { error: "email, displayName, and password are required." },
-        { status: 400 }
-      );
+    await enforceRateLimit("register-ip", getClientIp(request), { limit: 10, windowSeconds: 3600 });
+    await enforceRateLimit("register-email", email, { limit: 4, windowSeconds: 3600 });
+
+    let uid: string;
+    try {
+      const existing = await adminAuth.getUserByEmail(email);
+      const profile = await adminDb.collection("users").doc(existing.uid).get();
+      if (profile.exists && profile.data()?.isActivated) {
+        throw new ApiError(409, "An account with this email already exists.");
+      }
+      // Abandoned, never-verified registration: allow the owner to retry.
+      await adminAuth.updateUser(existing.uid, { password, displayName, disabled: true });
+      uid = existing.uid;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if ((error as { code?: string }).code !== "auth/user-not-found") throw error;
+      const created = await adminAuth.createUser({ email, password, displayName, disabled: true });
+      uid = created.uid;
     }
 
-    // Create Firebase Auth user — disabled until OTP is verified
-    const credential = await createUserWithEmailAndPassword(auth, email, password);
-    const uid = credential.user.uid;
-
-    // Disable the account until OTP verification
-    // (We store isActivated: false in Firestore; login guard checks this)
-    const code = generateOTP();
-    const expiresAt = Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000));
-
-    // Store OTP document (keyed by email for easy lookup)
-    await setDoc(doc(db, "otps", email), {
-      code,
-      uid,
-      displayName,
-      expiresAt,
-    });
-
+    const code = generateOtp();
+    await storeOtp("register", email, code, { uid, displayName });
     await sendOTPEmail(email, code);
 
-    return NextResponse.json({ success: true, uid });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Internal server error";
-    const isFirebaseError = message.includes("email-already-in-use");
-    return NextResponse.json(
-      { error: isFirebaseError ? "An account with this email already exists." : message },
-      { status: isFirebaseError ? 409 : 500 }
-    );
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    return handleApiError(error, "send-otp");
   }
 }

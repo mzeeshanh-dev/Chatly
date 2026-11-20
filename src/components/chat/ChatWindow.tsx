@@ -42,7 +42,14 @@ import { db } from "@/lib/firebase";
 import { COLLECTIONS, messagesRef, type MessageDoc, type FirestoreUser } from "@/lib/firestore";
 import { getPresenceDotColor } from "@/lib/presence";
 import { useAuth } from "@/context/AuthContext";
-import type { SelectedConversation } from "./ChatList";
+import type { SelectedConversation, GroupMemberEntry, TimestampLike } from "./ChatList";
+
+/** Live parent (chat/group) document fields this component reads. */
+interface LiveChatDoc {
+  status?: "pending" | "active" | "rejected";
+  members?: GroupMemberEntry[];
+  unreadCount?: Record<string, number>;
+}
 import MessageItem from "./MessageItem";
 import SystemLog from "./SystemLog";
 import { MessageSkeleton } from "@/components/ui/Skeleton";
@@ -51,6 +58,11 @@ import GroupSettingsModal from "./GroupSettingsModal";
 import UserProfileModal from "./UserProfileModal";
 import MessageTagModal from "./MessageTagModal";
 import DigestBanner from "./DigestBanner";
+import { toast } from "sonner";
+import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import EditMessageModal from "./modals/EditMessageModal";
+import ForwardMessagesModal from "./modals/ForwardMessagesModal";
+import ClearChatModal from "./modals/ClearChatModal";
 
 const spring = { type: "spring", stiffness: 300, damping: 25 } as const;
 const EDIT_WINDOW_MS = 3 * 60 * 1000;
@@ -81,20 +93,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showTagModal, setShowTagModal] = useState(false);
   const [pendingMedia, setPendingMedia] = useState<{ file: File; type: "image" | "file" } | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [recordMs, setRecordMs] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordChunksRef = useRef<Blob[]>([]);
-  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const { data: forwardChats = [] } = useChatsQuery(user?.uid);
   const { data: forwardGroups = [] } = useGroupsQuery(user?.uid);
 
   const isDM = conversation.type === "dm";
+  const groupMembers: GroupMemberEntry[] = conversation.type === "group" ? conversation.members : [];
   const parentId = isDM ? conversation.chatId : conversation.groupId;
   const parentCollection: "chats" | "groups" = isDM ? "chats" : "groups";
   const visibleMessages = messages.filter((msg) => !user?.uid || !msg.deletedFor?.includes(user.uid));
@@ -129,11 +137,11 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
   }, [parentId]);
   useEffect(() => {
     if (!liveDoc || !user) return;
-    setUnreadOnOpen((prev) => (prev !== null ? prev : ((liveDoc as any)?.unreadCount?.[user.uid] ?? 0)));
+    setUnreadOnOpen((prev) => (prev !== null ? prev : ((liveDoc as LiveChatDoc | undefined)?.unreadCount?.[user.uid] ?? 0)));
   }, [liveDoc, user]);
 
   // ─── Real-time User Presence Hook ──────────────────────────────────────────
-  const otherUid = isDM ? (conversation as any).participants?.find((p: string) => p !== user?.uid) : null;
+  const otherUid = isDM ? (conversation.type === "dm" ? conversation.participants : []).find((p: string) => p !== user?.uid) : null;
   const [liveProfile, setLiveProfile] = useState<FirestoreUser | null>(null);
 
   useEffect(() => {
@@ -156,10 +164,10 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
 
   // ─── Use liveDoc status if available (real-time), else fall back to prop ──
   const liveStatus = isDM
-    ? (liveDoc as any)?.status ?? conversation.status
+    ? (liveDoc as LiveChatDoc | undefined)?.status ?? conversation.status
     : null;
   const liveMembers = !isDM
-    ? (liveDoc as any)?.members ?? (conversation as any).members
+    ? (liveDoc as LiveChatDoc | undefined)?.members ?? groupMembers
     : null;
 
   const isRejected = isDM && liveStatus === "rejected";
@@ -168,7 +176,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
     : null;
 
   // Pending logic — derived from live data
-  const groupMember = !isDM ? liveMembers?.find((m: any) => m.uid === user?.uid) : null;
+  const groupMember = !isDM ? liveMembers?.find((m: GroupMemberEntry) => m.uid === user?.uid) : null;
   const isPending = isDM
     ? liveStatus === "pending"
     : groupMember?.status === "pending";
@@ -271,7 +279,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
 
     const resolveNames = async () => {
       const names: Record<string, string> = {};
-      for (const m of (conversation as any).members) {
+      for (const m of groupMembers) {
         const snap = await getDoc(doc(db, COLLECTIONS.USERS, m.uid));
         if (snap.exists()) {
           names[m.uid] = snap.data().displayName;
@@ -286,12 +294,12 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
   // Hook for live profile moved to top of file
 
 
-  const otherLastRead = otherUid ? (conversation.lastRead?.[otherUid] as any) : null;
+  const otherLastRead = otherUid ? (conversation.lastRead?.[otherUid] as TimestampLike) : null;
 
   // ─── Message Status Logic ──────────────────────────────────────────────────
   const getMessageStatus = (msg: MessageDoc) => {
     if (msg.senderId !== user?.uid || !otherLastRead || !msg.timestamp) return "sent";
-    const msgTime = (msg.timestamp as any).toDate ? (msg.timestamp as any).toDate() : new Date();
+    const msgTime = (msg.timestamp as TimestampLike)?.toDate?.() ?? new Date();
     const readTime = otherLastRead.toDate ? otherLastRead.toDate() : new Date();
     return msgTime <= readTime ? "read" : "sent";
   };
@@ -314,7 +322,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
       await batch.commit();
     } else {
       // Update group member status
-      const updatedMembers = conversation.members.map((m: any) =>
+      const updatedMembers = conversation.members.map((m: GroupMemberEntry) =>
         m.uid === user?.uid ? { ...m, status: "accepted" } : m
       );
       await updateDoc(doc(db, COLLECTIONS.GROUPS, conversation.groupId), {
@@ -345,8 +353,8 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
       }
     } else {
       // Remove self from group
-      const updatedMembers = (conversation as any).members.filter((m: any) => m.uid !== user?.uid);
-      const updatedMemberIds = (conversation as any).members.filter((m: any) => m.uid !== user?.uid).map((m: any) => m.uid);
+      const updatedMembers = groupMembers.filter((m: GroupMemberEntry) => m.uid !== user?.uid);
+      const updatedMemberIds = groupMembers.filter((m: GroupMemberEntry) => m.uid !== user?.uid).map((m: GroupMemberEntry) => m.uid);
       await updateDoc(doc(db, COLLECTIONS.GROUPS, conversation.groupId), {
         members: updatedMembers,
         memberIds: updatedMemberIds,
@@ -429,9 +437,9 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
         });
       } else {
         await Promise.all(
-          (conversation as any).members
-            .filter((m: any) => m.uid !== user.uid)
-            .map((m: any) =>
+          groupMembers
+            .filter((m: GroupMemberEntry) => m.uid !== user.uid)
+            .map((m: GroupMemberEntry) =>
               fetch("/api/notify", {
                 method: "POST",
                 headers,
@@ -470,7 +478,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
 
       // Update parent doc's last message and counters
       const parentRef = doc(db, parentCollection, parentId);
-      const updateData: any = {
+      const updateData: Record<string, unknown> = {
         lastMessage: text,
         lastMessageAt: serverTimestamp(),
       };
@@ -481,7 +489,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
           updateData[`unreadCount.${otherId}`] = increment(1);
         }
       } else {
-        (conversation as any).members.forEach((m: any) => {
+        groupMembers.forEach((m: GroupMemberEntry) => {
           if (m.uid !== user.uid) {
             updateData[`unreadCount.${m.uid}`] = increment(1);
           }
@@ -526,14 +534,14 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
       } satisfies Omit<MessageDoc, "id">);
 
       const preview =
-        mediaType === "image" ? "📷 Photo" : mediaType === "voice" ? "🎤 Voice message" : `📎 ${uploaded.mediaMeta.fileName ?? "File"}`;
+        mediaType === "image" ? "Photo" : mediaType === "voice" ? "Voice message" : uploaded.mediaMeta.fileName ?? "File";
       const parentRef = doc(db, parentCollection, parentId);
-      const updateData: any = { lastMessage: preview, lastMessageAt: serverTimestamp() };
+      const updateData: Record<string, unknown> = { lastMessage: preview, lastMessageAt: serverTimestamp() };
       if (isDM) {
         const otherId = conversation.participants.find((p: string) => p !== user.uid);
         if (otherId) updateData[`unreadCount.${otherId}`] = increment(1);
       } else {
-        (conversation as any).members.forEach((m: any) => {
+        groupMembers.forEach((m: GroupMemberEntry) => {
           if (m.uid !== user.uid) updateData[`unreadCount.${m.uid}`] = increment(1);
         });
       }
@@ -541,7 +549,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
       notifyMessageRecipients(preview).catch((err) => console.error("Notify error:", err));
     } catch (error) {
       console.error("Media send error:", error);
-      alert(error instanceof Error ? error.message : "Upload failed. Please try again.");
+      toast.error(error instanceof Error ? error.message : "Upload failed. Please try again.");
     } finally {
       setUploading(false);
     }
@@ -575,50 +583,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
     }
   };
 
-  const handleStartRecording = async () => {
+  const recorder = useVoiceRecorder({
+    onFinish: (file, durationMs) => void sendMediaMessage(file, "voice", durationMs),
+    onError: (message) => toast.error(message),
+  });
+  const recording = recorder.recording;
+  const recordMs = recorder.elapsedMs;
+
+  const handleStartRecording = () => {
     setShowAttachMenu(false);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      recordChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) recordChunksRef.current.push(e.data);
-      };
-      recorder.start();
-      mediaRecorderRef.current = recorder;
-      setRecording(true);
-      setRecordMs(0);
-      recordTimerRef.current = setInterval(() => setRecordMs((ms) => ms + 1000), 1000);
-    } catch (error) {
-      console.error("Could not start recording:", error);
-      alert("Microphone unavailable — check browser permissions.");
-    }
-  };
-
-  const stopRecordingStream = () => {
-    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-    mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop());
-    setRecording(false);
-  };
-
-  const handleStopRecording = () => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) return;
-    const durationMs = recordMs;
-    recorder.onstop = () => {
-      const blob = new Blob(recordChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-      const file = new File([blob], `voice-note.${blob.type.includes("mp4") ? "m4a" : "webm"}`, { type: blob.type });
-      sendMediaMessage(file, "voice", durationMs);
-    };
-    recorder.stop();
-    stopRecordingStream();
-  };
-
-  const handleCancelRecording = () => {
-    const recorder = mediaRecorderRef.current;
-    if (recorder) recorder.onstop = null;
-    recorder?.stop();
-    stopRecordingStream();
+    void recorder.start();
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -743,7 +717,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
         : null;
 
     if (editingMessage.senderId !== user.uid || !sentAt || Date.now() - sentAt.getTime() > EDIT_WINDOW_MS) {
-      window.alert("This message can only be edited within 3 minutes after sending.");
+      toast.error("This message can only be edited within 3 minutes after sending.");
       setEditingMessage(null);
       setEditText("");
       clearSelection();
@@ -826,7 +800,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
         { uid: user?.uid ?? "", name: "You" },
         { uid: conversation.other.uid, name: conversation.other.displayName },
       ]
-    : (conversation as any).members.map((m: { uid: string }) => ({
+    : groupMembers.map((m: { uid: string }) => ({
         uid: m.uid,
         name: m.uid === user?.uid ? "You" : memberProfiles[m.uid] ?? "Unknown",
       }));
@@ -976,7 +950,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
                   </>
                 ) : (
                   <>
-                    You've been invited to join <span className="text-zinc-300">{conversation.name}</span>.
+                    You&apos;ve been invited to join <span className="text-zinc-300">{conversation.name}</span>.
                   </>
                 )}
               </p>
@@ -1132,16 +1106,16 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
           </div>
         ) : recording ? (
           <div className="flex items-center gap-3 bg-white dark:bg-zinc-900/40 border border-zinc-300 dark:border-zinc-800/80 rounded-2xl px-4 py-3">
-            <button type="button" onClick={handleCancelRecording} className="text-zinc-500 hover:text-red-500 transition-colors">
+            <button type="button" onClick={recorder.cancel} className="text-zinc-500 hover:text-red-500 transition-colors">
               <X size={18} />
             </button>
             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
             <span className="flex-1 text-sm text-zinc-700 dark:text-zinc-300">
-              Recording… {Math.floor(recordMs / 60000)}:{String(Math.floor((recordMs % 60000) / 1000)).padStart(2, "0")}
+              Recording {Math.floor(recordMs / 60000)}:{String(Math.floor((recordMs % 60000) / 1000)).padStart(2, "0")}
             </span>
             <button
               type="button"
-              onClick={handleStopRecording}
+              onClick={recorder.stop}
               className="w-9 h-9 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl flex items-center justify-center transition-colors"
             >
               <Stop size={16} weight="fill" />
@@ -1323,7 +1297,7 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
           <button 
-            onClick={() => (window as any).dispatchEvent(new CustomEvent("close-chat"))}
+            onClick={() => window.dispatchEvent(new CustomEvent("close-chat"))}
             className="w-full text-left px-4 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-white/[0.04] hover:text-zinc-900 dark:hover:text-white transition-colors flex items-center justify-between"
           >
             Close Chat
@@ -1352,194 +1326,39 @@ const ChatWindow = ({ conversation, onBack }: ChatWindowProps) => {
         </div>
       )}
 
-      {/* Edit Message Modal */}
-      <AnimatePresence>
-        {editingMessage && (
-          <div className="fixed inset-0 z-[195] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => {
-                setEditingMessage(null);
-                setEditText("");
-              }}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            />
-            <motion.form
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                saveEditedMessage();
-              }}
-              className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#1a1d28]"
-            >
-              <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-white/[0.06]">
-                <div>
-                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Edit message</h3>
-                  <p className="text-xs text-zinc-500">Available for 3 minutes after sending</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingMessage(null);
-                    setEditText("");
-                  }}
-                  className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-white/[0.06] dark:hover:text-zinc-100"
-                  aria-label="Close edit modal"
-                >
-                  <X size={18} weight="bold" />
-                </button>
-              </div>
+      <EditMessageModal
+        open={!!editingMessage}
+        text={editText}
+        saving={sending}
+        onChange={setEditText}
+        onSave={saveEditedMessage}
+        onClose={() => {
+          setEditingMessage(null);
+          setEditText("");
+        }}
+      />
 
-              <div className="p-4">
-                <textarea
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  autoFocus
-                  rows={4}
-                  className="min-h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-900 outline-none transition-colors focus:border-emerald-500/60 dark:border-white/[0.08] dark:bg-zinc-900/60 dark:text-zinc-100"
-                />
-              </div>
+      <ForwardMessagesModal
+        open={showForwardModal}
+        selectedCount={selectedMessageIds.length}
+        targets={[...forwardChats, ...forwardGroups]}
+        forwarding={forwarding}
+        getTargetLabel={getForwardTargetLabel}
+        onForward={forwardSelectedMessages}
+        onClose={() => setShowForwardModal(false)}
+      />
 
-              <div className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-4 dark:border-white/[0.06]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingMessage(null);
-                    setEditText("");
-                  }}
-                  className="rounded-xl bg-zinc-100 px-4 py-2 text-xs font-bold text-zinc-700 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={!editText.trim() || sending}
-                  className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
-                >
-                  Save
-                </button>
-              </div>
-            </motion.form>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Forward Messages Modal */}
-      <AnimatePresence>
-        {showForwardModal && (
-          <div className="fixed inset-0 z-[190] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowForwardModal(false)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#1a1d28]"
-            >
-              <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-white/[0.06]">
-                <div>
-                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Forward messages</h3>
-                  <p className="text-xs text-zinc-500">{selectedMessageIds.length} selected</p>
-                </div>
-                <button
-                  onClick={() => setShowForwardModal(false)}
-                  className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-white/[0.06] dark:hover:text-zinc-100"
-                  aria-label="Close forward modal"
-                >
-                  <X size={18} weight="bold" />
-                </button>
-              </div>
-
-              <div className="max-h-[360px] overflow-y-auto p-3">
-                {[...forwardChats, ...forwardGroups].length === 0 ? (
-                  <p className="px-3 py-8 text-center text-xs text-zinc-500">No chats available to forward to.</p>
-                ) : (
-                  <div className="space-y-1">
-                    {[...forwardChats, ...forwardGroups].map((target) => (
-                      <button
-                        key={target.type === "dm" ? `dm-${target.chatId}` : `group-${target.groupId}`}
-                        type="button"
-                        onClick={() => forwardSelectedMessages(target)}
-                        disabled={forwarding}
-                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-zinc-100 disabled:opacity-60 dark:hover:bg-white/[0.06]"
-                      >
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-emerald-500/10 text-sm font-bold text-emerald-500">
-                          {target.type === "dm"
-                            ? target.other.displayName[0]?.toUpperCase()
-                            : target.name[0]?.toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                            {getForwardTargetLabel(target)}
-                          </p>
-                          <p className="truncate text-xs text-zinc-500">
-                            {target.type === "dm" ? target.other.email : "Group chat"}
-                          </p>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Delete Confirmation Modal */}
-      <AnimatePresence>
-        {showDeleteConfirm && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowDeleteConfirm(false)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative w-full max-w-xs bg-white dark:bg-[#1a1d28] border border-zinc-200 dark:border-white/[0.08] rounded-2xl p-6 shadow-2xl"
-            >
-              <h3 className="text-base font-semibold text-zinc-900 dark:text-zinc-100 mb-2">Clear Chat?</h3>
-              <p className="text-xs text-zinc-600 dark:text-zinc-400 mb-6 leading-relaxed">
-                This will clear this conversation only for you. Other people will still keep their messages.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="flex-1 py-2 text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={CONFIRM_CLEAR}
-                  disabled={sending}
-                  className="flex-1 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 text-xs font-bold rounded-xl transition-all border border-red-500/20 disabled:opacity-50"
-                >
-                  {sending ? "Clearing..." : "Clear for me"}
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <ClearChatModal
+        open={showDeleteConfirm}
+        busy={sending}
+        onConfirm={CONFIRM_CLEAR}
+        onClose={() => setShowDeleteConfirm(false)}
+      />
 
       {/* Group Settings Modal */}
       {showGroupSettings && !isDM && (
         <GroupSettingsModal
-          group={conversation as any}
+          group={conversation}
           onClose={() => setShowGroupSettings(false)}
         />
       )}

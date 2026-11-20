@@ -10,9 +10,23 @@ const inter = Inter({
   variable: "--font-inter",
 });
 
+const siteUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://chatly-stream.vercel.app";
+const description =
+  "Chatly is a real-time messaging app with direct chats, groups, media sharing, and message tracking, built on Next.js and Firebase.";
+
 export const metadata: Metadata = {
-  title: "Chatly | Messaging for the Zero-Trust Era",
-  description: "Secure, real-time messaging with end-to-end encrypted conversations.",
+  metadataBase: new URL(siteUrl),
+  title: { default: "Chatly | Real-time messaging", template: "%s | Chatly" },
+  description,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    siteName: "Chatly",
+    title: "Chatly | Real-time messaging",
+    description,
+    url: siteUrl,
+  },
+  twitter: { card: "summary", title: "Chatly | Real-time messaging", description },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

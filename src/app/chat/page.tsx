@@ -9,9 +9,10 @@ import SettingsPanel from "@/components/chat/SettingsPanel";
 import NewChatModal from "@/components/chat/NewChatModal";
 import NewGroupModal from "@/components/chat/NewGroupModal";
 import { motion } from "framer-motion";
-import { ChatCircle, UsersThree, GearSix } from "@phosphor-icons/react";
+import { ChatCircle, UsersThree, GearSix, ChatsCircle } from "@phosphor-icons/react";
 import { useChatsQuery, useGroupsQuery } from "@/lib/firebase-hooks";
 import ChatlyLogo from "@/components/landing/ChatlyLogo";
+import { clearServerSession } from "@/lib/session";
 
 type View = "messages" | "groups" | "settings";
 
@@ -38,7 +39,7 @@ function EmptyState({ view }: { view: View }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center bg-zinc-50 dark:bg-[#11131a] text-center px-8">
       <div className="w-16 h-16 rounded-2xl bg-white dark:bg-zinc-900/60 border border-zinc-200 dark:border-zinc-800/40 shadow-sm dark:shadow-none flex items-center justify-center mb-4">
-        <span className="text-2xl">💬</span>
+        <ChatsCircle size={28} className="text-emerald-500" aria-hidden />
       </div>
       <h2 className="text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-300 mb-1">
         {view === "groups" ? "Select a group" : "Select a conversation"}
@@ -141,7 +142,7 @@ const ChatPage = () => {
       }
     } else {
       const fresh = groupChats.find(
-        (g) => g.type === "group" && g.groupId === (selected as any).groupId
+        (g) => g.type === "group" && g.groupId === selected.groupId
       );
       if (fresh && JSON.stringify(fresh) !== JSON.stringify(selected)) {
         setSelected(fresh);
@@ -169,7 +170,16 @@ const ChatPage = () => {
     };
   }, []);
 
-  if (loading) return <LoadingScreen />;
+  // The route guard only checks that a session cookie exists. If Firebase has
+  // no user (expired/revoked session), drop the stale cookie and re-authenticate.
+  useEffect(() => {
+    if (loading || user) return;
+    clearServerSession().finally(() => {
+      window.location.replace(`/login?from=${encodeURIComponent("/chat")}`);
+    });
+  }, [loading, user]);
+
+  if (loading || !user) return <LoadingScreen />;
 
   const showChatWindow = selected !== null;
 
@@ -219,7 +229,7 @@ const ChatPage = () => {
           >
             {showChatWindow ? (
               <ChatWindow
-                key={selected.type === "dm" ? selected.chatId : (selected as any).groupId}
+                key={selected.type === "dm" ? selected.chatId : selected.groupId}
                 conversation={selected}
                 onBack={handleBack}
               />

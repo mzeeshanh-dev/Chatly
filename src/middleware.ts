@@ -1,11 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { SESSION_COOKIE } from "@/lib/session";
 
 const PROTECTED_ROUTES = ["/chat"];
 const ADMIN_SESSION_COOKIE = "chatly_admin_session";
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const sessionCookie = request.cookies.get("chatly_session")?.value;
+  const sessionCookie = request.cookies.get(SESSION_COOKIE)?.value;
   const adminCookie = request.cookies.get(ADMIN_SESSION_COOKIE)?.value;
   const isAuthenticated = Boolean(sessionCookie);
   const isAdminAuthenticated = Boolean(adminCookie);
@@ -23,14 +24,18 @@ export function middleware(request: NextRequest) {
   }
 
   // Redirect unauthenticated users away from protected routes
-  const isProtected = PROTECTED_ROUTES.some((r) => pathname.startsWith(r));
+  // Exact segment match so e.g. "/chatter" is not treated as "/chat".
+  const isProtected = PROTECTED_ROUTES.some((r) => pathname === r || pathname.startsWith(`${r}/`));
   if (isProtected && !isAuthenticated) {
     const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("from", pathname);
+    loginUrl.searchParams.set("from", `${pathname}${request.nextUrl.search}`);
     return NextResponse.redirect(loginUrl);
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+  // Authenticated pages must never be cached by shared caches or the bfcache.
+  if (isProtected) response.headers.set("Cache-Control", "private, no-store");
+  return response;
 }
 
 export const config = {
